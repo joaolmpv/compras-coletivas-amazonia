@@ -1,0 +1,80 @@
+// Modelagem relacional multi-ator (OE2 do TCC): comprador, fornecedor, hub
+// logistico e lote de compra coletiva, com rateio de frete por participante.
+//
+// Usa SQLite para simplificar a execucao local do prototipo; em producao a
+// stack definida no projeto e PostgreSQL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Buyer {
+  id             String          @id @default(cuid())
+  name           String
+  document       String          @unique // CNPJ
+  email          String          @unique
+  createdAt      DateTime        @default(now())
+  participations Participation[]
+}
+
+model Supplier {
+  id              String   @id @default(cuid())
+  name            String
+  document        String   @unique // CNPJ
+  // Calculado pelo modulo de analise de sentimento (OE4) a partir das reviews.
+  // Ainda nao implementado no prototipo atual -- ver README > Roadmap.
+  reputationScore Float?
+  reviews         Review[]
+  createdAt       DateTime @default(now())
+}
+
+model Review {
+  id         String   @id @default(cuid())
+  supplierId String
+  supplier   Supplier @relation(fields: [supplierId], references: [id])
+  buyerId    String
+  rating     Int // 1 a 5
+  comment    String?
+  createdAt  DateTime @default(now())
+}
+
+model Hub {
+  id                String @id @default(cuid())
+  name              String @unique
+  city              String
+  fixedDispatchCost Float // custo fixo por despacho de lote (frete fluvial/aereo)
+  variableCostPerM3 Float
+  capacityM3        Float
+  lots              Lot[]
+}
+
+model Lot {
+  id             String          @id @default(cuid())
+  hubId          String
+  hub            Hub             @relation(fields: [hubId], references: [id])
+  // "OPEN" | "CLOSED" | "DISPATCHED" -- SQLite nao suporta enum nativo;
+  // em PostgreSQL (producao) isso vira um enum de verdade.
+  status         String          @default("OPEN")
+  totalVolumeM3  Float           @default(0)
+  totalCost      Float? // preenchido quando o lote fecha (custo fixo + variavel do hub)
+  dispatchDate   DateTime?
+  createdAt      DateTime        @default(now())
+  participations Participation[]
+}
+
+model Participation {
+  id        String @id @default(cuid())
+  lotId     String
+  lot       Lot    @relation(fields: [lotId], references: [id])
+  buyerId   String
+  buyer     Buyer  @relation(fields: [buyerId], references: [id])
+  volumeM3  Float
+  // Valor rateado do frete deste lote proporcional ao volume do comprador --
+  // calculado de forma transacional no fechamento do lote (ver OE2 no README).
+  costShare Float?
+}
