@@ -1,8 +1,27 @@
-# Compra Coletiva B2B — Logística Amazônica
+<p align="center">
+  <img src="https://readme-typing-svg.demolab.com/?lines=Compra+Coletiva+B2B;Combatendo+o+%22Custo+Norte%22;Otimiza%C3%A7%C3%A3o+gen%C3%A9tica+de+frete&font=Fira%20Code&center=true&width=520&height=45&color=0ea5e9&vCenter=true&pause=1200&size=20" alt="Compra Coletiva B2B" />
+</p>
 
-### TCC (UFJ) — plataforma de compra coletiva com otimização de frete e reputação por IA
+<h1 align="center">🚢 Compra Coletiva B2B — Logística Amazônica</h1>
+<p align="center">TCC (UFJ) — otimização de frete e reputação por IA para o comércio B2B da Região Norte</p>
+
+<p align="center">
+  <img alt="Next.js" height="36" title="Next.js" src="https://raw.githubusercontent.com/devicons/devicon/master/icons/nextjs/nextjs-original.svg" />
+  <img alt="NestJS" height="36" title="NestJS" src="https://raw.githubusercontent.com/devicons/devicon/master/icons/nestjs/nestjs-original.svg" />
+  <img alt="PostgreSQL" height="36" title="PostgreSQL" src="https://raw.githubusercontent.com/devicons/devicon/master/icons/postgresql/postgresql-original.svg" />
+  <img alt="Prisma" height="36" title="Prisma" src="https://raw.githubusercontent.com/devicons/devicon/master/icons/prisma/prisma-original.svg" />
+  <img alt="Python" height="36" title="Python (otimização)" src="https://raw.githubusercontent.com/devicons/devicon/master/icons/python/python-original.svg" />
+</p>
 
 > Status: em desenvolvimento (TCC 2, entrega dez/2026). Este repositório documenta o problema, a arquitetura proposta e reúne os módulos já implementados do protótipo — sem inflar o que ainda está no cronograma.
+
+## 📸 Protótipo em ação
+
+<p align="center">
+  <img src="./docs/screenshots/otimizacao-resultado.png" alt="Gráfico comparando o custo de frete sem compra coletiva com o custo otimizado pelo algoritmo genético, mostrando 74.8% de economia estimada" width="600" />
+</p>
+
+<p align="center"><i>Ainda não há interface (OE3, planejado para out/2026) — este é o resultado real de uma execução do módulo de otimização (OE1), gerado por <a href="./optimization/plot_result.py"><code>plot_result.py</code></a>. Assim que o frontend existir, esta seção troca para screenshots da tela de rateio de frete.</i></p>
 
 ## O Problema
 
@@ -60,6 +79,9 @@ Simula pedidos de compradores distribuídos entre hubs logísticos (Manaus, Sant
 cd optimization
 pip install -r requirements.txt
 python genetic_algorithm.py
+
+# gera o gráfico em docs/screenshots/otimizacao-resultado.png
+python plot_result.py
 ```
 
 Saída de uma execução real do protótipo (60 pedidos simulados):
@@ -97,6 +119,14 @@ Rateio por comprador:
 ## Referencial Teórico (resumo)
 
 A pesquisa se apoia em seis eixos: economia regional e falhas de mercado na Amazônia; economia compartilhada aplicada a compras coletivas B2B; algoritmos de otimização logística (Algoritmos Genéticos sobre variações do VRP); engenharia de software (monolito modular, Next.js + NestJS + PostgreSQL); e análise de sentimento para reputação antifraude.
+
+## 📅 Diário de Desenvolvimento
+
+> Atualize esta tabela a cada sessão de trabalho — uma linha por dia é suficiente. É o histórico que mostra evolução real, não só o resultado final.
+
+| Data | O que mudou |
+|---|---|
+| 2026-09-14 | OE1 (otimização) e OE2 (modelagem de dados) publicados com protótipos funcionais; gráfico de resultado real gerado via `plot_result.py`. |
 
 ## Cronograma (TCC 2)
 
