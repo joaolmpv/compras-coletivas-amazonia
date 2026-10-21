@@ -1,16 +1,19 @@
 """
-Tres estrategias de consolidacao de lotes, comparadas no experimento OE1:
+Quatro estrategias de consolidacao de lotes, comparadas no experimento OE1:
 
-  (a) kmeans_ga       -- K-Means (agrupamento) + Algoritmo Genetico (alocacao)
-  (b) greedy_volume   -- fecha um lote sempre que a capacidade fixa do hub e atingida
-  (c) greedy_temporal -- fecha um lote a cada LIMIAR_TEMPORAL_DIAS, independente do volume
+  (a) kmeans_ga       -- K-Means (agrupamento, k derivado de m) + AG (alocacao)
+  (b) ag_direto       -- AG direto sobre os pedidos, sem K-Means (1 pedido = 1 "cluster")
+                          -- controle/ablacao: mede o que o K-Means realmente contribui
+  (c) greedy_volume   -- fecha um lote quando atinge um limiar de volume (fracao da capacidade)
+  (d) greedy_temporal -- fecha um lote a cada LIMIAR_TEMPORAL_DIAS, independente do volume
 
-As tres avaliam o custo final com a MESMA funcao `custo_total_particao`, que
-escolhe o modal de menor custo por lote (rodoviario/fluvial/aereo) -- a unica
-diferenca entre estrategias e como os pedidos sao agrupados em lotes, nao
-como o lote e precificado.
+Todas avaliam o custo final com a MESMA funcao `custo_total_particao` (escolhe
+o modal de menor custo por lote) e o mesmo `tempo_espera_particao` -- a unica
+diferenca entre estrategias e como os pedidos sao agrupados em lotes.
 """
 
+import math
+import random
 from collections import defaultdict
 
 import numpy as np
@@ -66,29 +69,26 @@ def custo_total_particao(lotes):
     return total
 
 
+def tempo_espera_particao(lotes):
+    """Espera (dias) de cada pedido = dia de despacho do seu lote - dia de chegada.
+
+    Dia de despacho = max(dia_chegada) dos pedidos do lote -- o lote so pode
+    sair depois que o ultimo pedido que o compoe chegou. Definicao aplicada
+    igualmente as quatro estrategias, para a comparacao ser justa.
+    """
+    esperas = []
+    for lote in lotes:
+        if not lote:
+            continue
+        dia_despacho = max(p["dia_chegada"] for p in lote)
+        for p in lote:
+            esperas.append(dia_despacho - p["dia_chegada"])
+    return esperas
+
+
 # ---------------------------------------------------------------------------
-# (a) K-Means + Algoritmo Genetico
+# Nucleo comum do AG (compartilhado por kmeans_ga e ag_direto)
 # ---------------------------------------------------------------------------
-
-def _clusterizar(pedidos, k_por_grupo=4):
-    clusters = []
-    for (hub, periodo), lista in agrupar_por_hub_periodo(pedidos).items():
-        features = np.array([[p["volume_m3"], p["janela_dias"]] for p in lista])
-        k = min(k_por_grupo, len(lista))
-        # random_state fixo: a decomposicao em clusters fica estavel entre as
-        # N_RUNS execucoes de uma mesma instancia -- a variabilidade que o
-        # experimento mede e a do AG (populacao/crossover/mutacao), nao a do
-        # K-Means, e isso mantem o tamanho do genoma do AG constante por instancia.
-        labels = KMeans(n_clusters=k, n_init=10, random_state=0).fit_predict(features)
-
-        grupos_label = defaultdict(list)
-        for pedido, label in zip(lista, labels):
-            grupos_label[label].append(pedido)
-
-        for grupo in grupos_label.values():
-            clusters.append({"hub": hub, "periodo": periodo, "pedidos": grupo})
-    return clusters
-
 
 def _montar_lotes_de_assignment(assignment, clusters):
     lotes = defaultdict(list)
@@ -98,15 +98,14 @@ def _montar_lotes_de_assignment(assignment, clusters):
     return list(lotes.values())
 
 
-def estrategia_kmeans_ga(pedidos, seed):
-    clusters = _clusterizar(pedidos)
+def _rodar_ga(clusters, seed):
     n = len(clusters)
 
     if not hasattr(creator, "FitnessMin"):
         creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
         creator.create("Individual", list, fitness=creator.FitnessMin)
 
-    rng_random = __import__("random").Random(seed)
+    rng_random = random.Random(seed)
 
     toolbox = base.Toolbox()
     toolbox.register("gene", rng_random.randint, 0, MAX_LOTES_POR_GRUPO - 1)
@@ -141,42 +140,103 @@ def estrategia_kmeans_ga(pedidos, seed):
 
     melhor = tools.selBest(populacao, k=1)[0]
     custo_final = melhor.fitness.values[0]
+    melhores_lotes = _montar_lotes_de_assignment(melhor, clusters)
 
     minimos_por_geracao = logbook.select("min")
     geracao_convergencia = next(
         g for g, valor in enumerate(minimos_por_geracao) if np.isclose(valor, custo_final)
     )
 
-    return custo_final, minimos_por_geracao, geracao_convergencia
+    return melhores_lotes, custo_final, minimos_por_geracao, geracao_convergencia
 
 
 # ---------------------------------------------------------------------------
-# (b) Greedy por volume fixo
+# (a) K-Means + Algoritmo Genetico
+#
+# k_grupo = min(len(grupo), ceil(m * volume_total_do_grupo / capacidade_do_hub))
+#
+# "volume_total/capacidade" e o numero minimo de lotes para escoar o grupo;
+# multiplicar por m da ao AG, em media, m clusters por lote para recombinar --
+# m=1 equivaleria a zero liberdade (cada cluster vira um lote, sem o AG poder
+# fazer nada). m e escolhido por ajuste (ver tuning.py), nao fixado aqui.
 # ---------------------------------------------------------------------------
 
-def estrategia_greedy_volume(pedidos):
-    custo_acumulado_lotes = []
+def _k_grupo(volume_total_m3, capacidade_hub_m3, tamanho_grupo, m):
+    k = math.ceil(m * volume_total_m3 / capacidade_hub_m3)
+    return max(1, min(tamanho_grupo, k))
+
+
+def _clusterizar(pedidos, m):
+    clusters = []
+    for (hub, periodo), lista in agrupar_por_hub_periodo(pedidos).items():
+        volume_total = sum(p["volume_m3"] for p in lista)
+        k = _k_grupo(volume_total, HUB_CAPACIDADE_M3[hub], len(lista), m)
+
+        features = np.array([[p["volume_m3"], p["janela_dias"]] for p in lista])
+        # random_state fixo: a decomposicao em clusters fica estavel entre as
+        # execucoes de uma mesma instancia -- a variabilidade que o experimento
+        # mede e a do AG (populacao/crossover/mutacao), nao a do K-Means.
+        labels = KMeans(n_clusters=k, n_init=10, random_state=0).fit_predict(features)
+
+        grupos_label = defaultdict(list)
+        for pedido, label in zip(lista, labels):
+            grupos_label[label].append(pedido)
+
+        for grupo in grupos_label.values():
+            clusters.append({"hub": hub, "periodo": periodo, "pedidos": grupo})
+    return clusters
+
+
+def estrategia_kmeans_ga(pedidos, seed, m):
+    clusters = _clusterizar(pedidos, m)
+    return _rodar_ga(clusters, seed)
+
+
+# ---------------------------------------------------------------------------
+# (b) AG direto -- sem K-Means, cada pedido e seu proprio "cluster" de tamanho 1.
+# Controle/ablacao: isola o que o K-Means contribui (ou tira) do resultado do AG.
+# ---------------------------------------------------------------------------
+
+def _clusters_identidade(pedidos):
+    return [
+        {"hub": p["hub"], "periodo": p["periodo"], "pedidos": [p]} for p in pedidos
+    ]
+
+
+def estrategia_ag_direto(pedidos, seed):
+    clusters = _clusters_identidade(pedidos)
+    return _rodar_ga(clusters, seed)
+
+
+# ---------------------------------------------------------------------------
+# (c) Greedy por volume -- fecha o lote ao atingir limiar_fracao * capacidade do hub.
+# limiar_fracao e escolhido por ajuste (ver tuning.py), mesmo orcamento do m do AG.
+# ---------------------------------------------------------------------------
+
+def estrategia_greedy_volume(pedidos, limiar_fracao):
+    lotes = []
     for (hub, _periodo), lista in agrupar_por_hub_periodo(pedidos).items():
         lista_ordenada = sorted(lista, key=lambda p: p["dia_chegada"])
-        capacidade = HUB_CAPACIDADE_M3[hub]
+        limiar = HUB_CAPACIDADE_M3[hub] * limiar_fracao
 
         lote_atual = []
         volume_atual = 0.0
         for pedido in lista_ordenada:
-            if volume_atual + pedido["volume_m3"] > capacidade and lote_atual:
-                custo_acumulado_lotes.append(lote_atual)
+            if volume_atual + pedido["volume_m3"] > limiar and lote_atual:
+                lotes.append(lote_atual)
                 lote_atual = []
                 volume_atual = 0.0
             lote_atual.append(pedido)
             volume_atual += pedido["volume_m3"]
         if lote_atual:
-            custo_acumulado_lotes.append(lote_atual)
+            lotes.append(lote_atual)
 
-    return custo_total_particao(custo_acumulado_lotes)
+    return lotes
 
 
 # ---------------------------------------------------------------------------
-# (c) Fechamento por limiar temporal fixo
+# (d) Fechamento por limiar temporal fixo -- nao faz parte do protocolo de
+# ajuste (so kmeans_ga e greedy_volume recebem orcamento de ajuste).
 # ---------------------------------------------------------------------------
 
 def estrategia_greedy_temporal(pedidos):
@@ -185,4 +245,4 @@ def estrategia_greedy_temporal(pedidos):
         bucket = p["dia_chegada"] // LIMIAR_TEMPORAL_DIAS
         buckets[(p["hub"], p["periodo"], bucket)].append(p)
 
-    return custo_total_particao(list(buckets.values()))
+    return list(buckets.values())

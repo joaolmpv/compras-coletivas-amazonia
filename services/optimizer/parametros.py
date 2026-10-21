@@ -52,3 +52,15 @@ LIMIAR_TEMPORAL_DIAS = 3
 
 TAMANHOS_INSTANCIA = [10, 50, 200]
 N_RUNS = 30
+
+# --- v2: protocolo de ajuste (ver PARAMETROS.md) ---------------------------
+
+M_CANDIDATOS = [2, 3, 4, 6, 8]
+LIMIAR_VOLUME_FRACOES_CANDIDATAS = [0.5, 0.6, 0.75, 0.9, 1.0]
+N_TUNING_RUNS = 10
+
+# Offsets de seed: ajuste e avaliacao usam faixas disjuntas de seed, para que
+# nenhuma seed usada para ESCOLHER m/limiar seja reusada para MEDIR o
+# resultado final.
+OFFSET_SEED_AVALIACAO = 0       # seeds n*1000 + 0..N_RUNS-1
+OFFSET_SEED_AJUSTE = 500        # seeds n*1000 + 500..500+N_TUNING_RUNS-1

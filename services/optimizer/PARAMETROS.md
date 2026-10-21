@@ -36,6 +36,91 @@ citável, ou está marcado como premissa (e por quê é uma premissa razoável).
 | Limiar de volume fixo (greedy por volume) | = capacidade do hub (`capacidade_m3`) | Reaproveita o mesmo parâmetro de capacidade já usado no modelo de custo, em vez de inventar um segundo limiar sem relação com o resto do modelo. |
 | Limiar temporal fixo (fechamento por tempo) | 3 dias | Premissa — período de consolidação "ingênuo" razoável para comparação; não foi ajustado para produzir um resultado específico. |
 
+## v2 — regra de granularidade do K-Means (decidida antes de rodar)
+
+Na v1, `k_por_grupo` (número de clusters do K-Means por grupo hub×período)
+era fixo em 4, herdado sem alteração do protótipo original. O resultado da
+v1 mostrou o AG perdendo para `greedy_volume` nas três instâncias (ver
+`docs/oe1-tabela-resumo-v1-k-fixo-4.md`) porque, em instâncias maiores, 4
+clusters por grupo ficam grosseiros demais (4 a 16 pedidos por cluster em
+n=200) para o AG fracionar e competir com um empacotamento pedido-a-pedido.
+
+**Primeira tentativa de regra (descartada antes de rodar a avaliação final)**:
+`k_grupo = ceil(volume_total_do_grupo / capacidade_do_hub)` — essa é o número
+mínimo teórico de lotes de capacidade cheia para escoar o grupo. Testamos
+numericamente nas três instâncias antes de adotar: o resultado é **menor ou
+igual** ao `k=4` fixo da v1 em todos os grupos (ex.: k=1 em quase todo grupo
+de n=10/50) — ou seja, pioraria a granularidade, não corrigiria. A leitura
+alternativa ("capacidade do modal" = capacidade do aéreo expresso, a menor
+dos três) faz o k exceder o número de pedidos do grupo em todos os casos,
+degenerando o K-Means para 1 pedido por cluster nas três instâncias — o que
+esvaziaria a etapa de agrupamento do OE1. Nenhuma das duas foi adotada.
+
+**Regra final adotada para v2** (introduz `m`, o número médio de clusters
+por lote que o AG pode recombinar):
+
+```
+k_grupo = min(len(pedidos_do_grupo), ceil(m * volume_total_do_grupo_m3 / capacidade_m3_do_hub))
+```
+
+`volume_total/capacidade` continua sendo o piso físico (nº mínimo de lotes);
+multiplicar por `m` dá ao AG, em média, `m` clusters por lote para recombinar
+-- com `m=1` o AG não teria nenhuma liberdade (cada cluster já seria um
+lote). `m` não foi fixado a priori: foi escolhido por ajuste (protocolo
+abaixo), varrendo `M_CANDIDATOS = [2, 3, 4, 6, 8]` em seeds de ajuste
+DISJUNTAS das `N_RUNS` seeds de avaliação (`OFFSET_SEED_AJUSTE` vs
+`OFFSET_SEED_AVALIACAO` em `parametros.py`), critério fixado antes de rodar:
+menor custo médio por comprador no conjunto de ajuste. `greedy_volume`
+recebeu o mesmo orçamento de ajuste, varrendo o limiar de fechamento como
+fração da capacidade do hub (`LIMIAR_VOLUME_FRACOES_CANDIDATAS = [0.5, 0.6,
+0.75, 0.9, 1.0]`) nas mesmas seeds de ajuste (determinístico, então cada
+fração só precisa ser avaliada uma vez).
+
+A tabela completa de ajuste (todos os `m` e `limiar_fracao` testados, não só
+o escolhido) está em `docs/oe1-tabela-ajuste-v2.md`.
+
+**Resultado do ajuste — contra-intuitivo e reportado como saiu**: o `m`
+escolhido foi sempre o menor ou um dos menores do conjunto testado (m=2 em
+n=10/50, m=3 em n=200) — custo médio por comprador cresce monotonicamente de
+m=2 para m=8 nas três instâncias. Ou seja, mais liberdade de recombinação
+para o AG piorou o resultado, não melhorou — o oposto da hipótese que
+motivou a regra. Isso é consistente com o controle `ag_direto` (AG sem
+K-Means, granularidade máxima = 1 pedido por "cluster"): ele também perde
+para `kmeans_ga` em n=50/200. A explicação mais provável, registrada aqui em
+vez de usada para justificar outra rodada de ajuste: os hiperparâmetros do
+AG (`pop=80, ngen=60`, não retunados -- ver seção abaixo) não escalam com o
+tamanho do espaço de busca; genomas maiores (mais clusters, ou um por
+pedido) ficam mais difíceis de otimizar no mesmo orçamento computacional, e
+isso pesa mais do que o ganho teórico de granularidade.
+
+Esta regra e o conjunto `M_CANDIDATOS`/`LIMIAR_VOLUME_FRACOES_CANDIDATAS`
+foram escritos e commitados ANTES de rodar o experimento v2 -- não foram
+ajustados depois de ver o resultado final para "bater" o critério de 15%. O
+resultado completo (custo e tempo de espera, quatro estratégias) está em
+`docs/oe1-tabela-resumo-v2-k-por-m.md`, sem alteração posterior, mesmo
+ficando abaixo de 15% contra `greedy_volume`.
+
+## v2 — controle: AG direto (sem K-Means)
+
+Adicionada uma quarta estratégia, `ag_direto`: o AG roda direto sobre os
+pedidos, cada pedido como seu próprio "cluster" de tamanho 1 -- sem nenhuma
+etapa de K-Means. Serve para isolar o que o K-Means de fato contribui (ver
+resultado contra-intuitivo acima: `ag_direto` teve desempenho pior que
+`kmeans_ga`, não melhor).
+
+## v2 — tempo de espera
+
+Cada pedido ganhou um atributo novo, `dia_chegada` (dia simulado em que o
+pedido foi feito -- não existia na v1, necessária para medir esperas e para
+a baseline `greedy_temporal`). Tempo de espera de um pedido =
+`dia_despacho_do_lote - dia_chegada`, onde `dia_despacho_do_lote =
+max(dia_chegada)` dos pedidos daquele lote -- definição aplicada igualmente
+às quatro estratégias. O AG (ambas as variantes) não tem nenhum termo de
+tempo na função de fitness -- só minimiza custo -- então não há razão a
+priori para esperar que ele controle o tempo de espera, e o resultado
+medido confirma isso (ver tabela resumo): o AG produz esperas médias muito
+maiores que as duas baselines.
+
 ## O que **não** foi alterado para favorecer o resultado
 
 Os hiperparâmetros do Algoritmo Genético (`pop=80, ngen=60, cxpb=0.6, mutpb=0.3,
