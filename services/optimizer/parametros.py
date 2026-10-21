@@ -1,0 +1,54 @@
+"""
+Parametros do experimento OE1 (10/50/200 compradores, 3 modais).
+Fonte ou premissa de cada valor documentada em PARAMETROS.md -- nao altere um
+numero aqui sem atualizar a linha correspondente naquele arquivo.
+"""
+
+HUBS = ["Manaus", "Santarem", "Belem"]
+
+HUB_DISTANCIA_KM = {
+    "Manaus": 80,
+    "Santarem": 850,
+    "Belem": 1300,
+}
+
+HUB_CUSTO_FIXO_DESPACHO = {
+    "Manaus": 1800.0,
+    "Santarem": 2400.0,
+    "Belem": 2000.0,
+}
+
+HUB_CAPACIDADE_M3 = {
+    "Manaus": 40.0,
+    "Santarem": 30.0,
+    "Belem": 35.0,
+}
+
+DENSIDADE_CARGA_KG_POR_M3 = 250.0
+
+RODOVIARIO_RS_POR_TON_KM = 0.620
+
+FLUVIAL_RS_POR_TON_KM = 0.970
+FLUVIAL_MULTIPLICADOR = {"cheia": 1.0, "seca": 1.35}
+
+# Faixas tarifarias do aereo expresso: (limite_superior_kg, tarifa_rs_por_kg),
+# em ordem crescente de limite.
+AEREO_FAIXAS_RS_POR_KG = [
+    (50, 70.0),
+    (200, 50.0),
+    (float("inf"), 30.0),
+]
+AEREO_CAPACIDADE_MAX_KG = 500.0
+
+MAX_LOTES_POR_GRUPO = 6  # genes disponiveis para o AG agrupar clusters por (hub, periodo)
+
+GA_POPULACAO = 80
+GA_GERACOES = 60
+GA_CXPB = 0.6
+GA_MUTPB = 0.3
+GA_TOURNSIZE = 3
+
+LIMIAR_TEMPORAL_DIAS = 3
+
+TAMANHOS_INSTANCIA = [10, 50, 200]
+N_RUNS = 30
