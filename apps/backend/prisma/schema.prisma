@@ -1,3 +1,9 @@
+// Modelagem relacional multi-ator (OE2 do TCC): comprador, fornecedor, produto,
+// hub logistico e lote de compra coletiva, com rateio de frete por participante.
+//
+// PostgreSQL (producao), substituindo o protótipo anterior em SQLite
+// (ver database/prisma/schema.prisma, hoje descontinuado).
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -7,10 +13,91 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model User {
-  id        String   @id @default(uuid())
-  email     String   @unique
-  name      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+enum StatusLote {
+  ABERTO
+  FECHADO
+  DESPACHADO
+}
+
+model Comprador {
+  id           String        @id @default(cuid())
+  name         String
+  document     String        @unique // CNPJ
+  email        String        @unique
+  createdAt    DateTime      @default(now())
+  pedidosLote  PedidoLote[]
+  avaliacoes   Avaliacao[]
+}
+
+model Fornecedor {
+  id              String      @id @default(cuid())
+  name            String
+  document        String      @unique // CNPJ
+  // Calculado pelo modulo de analise de sentimento (OE4) a partir das avaliacoes.
+  reputationScore Float?
+  produtos        Produto[]
+  avaliacoes      Avaliacao[]
+  createdAt       DateTime    @default(now())
+}
+
+model Produto {
+  id           String     @id @default(cuid())
+  name         String
+  description  String?
+  unitPrice    Float
+  fornecedorId String
+  fornecedor   Fornecedor @relation(fields: [fornecedorId], references: [id])
+  lotes        Lote[]
+  createdAt    DateTime   @default(now())
+}
+
+model HubLogistico {
+  id                String @id @default(cuid())
+  name              String @unique
+  city              String
+  fixedDispatchCost Float // custo fixo por despacho de lote (frete fluvial/aereo)
+  variableCostPerM3 Float
+  capacityM3        Float
+  lotes             Lote[]
+}
+
+model Lote {
+  id             String       @id @default(cuid())
+  produtoId      String
+  produto        Produto      @relation(fields: [produtoId], references: [id])
+  hubId          String
+  hub            HubLogistico @relation(fields: [hubId], references: [id])
+  status         StatusLote   @default(ABERTO)
+  totalVolumeM3  Float        @default(0)
+  totalCost      Float? // preenchido quando o lote fecha (custo fixo + variavel do hub)
+  dispatchDate   DateTime?
+  createdAt      DateTime     @default(now())
+  pedidosLote    PedidoLote[]
+}
+
+model PedidoLote {
+  id          String    @id @default(cuid())
+  loteId      String
+  lote        Lote      @relation(fields: [loteId], references: [id])
+  compradorId String
+  comprador   Comprador @relation(fields: [compradorId], references: [id])
+  volumeM3    Float
+  // Valor rateado do frete deste lote proporcional ao volume do comprador --
+  // calculado de forma transacional no fechamento do lote (ver OE2 no README).
+  costShare   Float?
+
+  @@unique([loteId, compradorId])
+}
+
+model Avaliacao {
+  id            String     @id @default(cuid())
+  fornecedorId  String
+  fornecedor    Fornecedor @relation(fields: [fornecedorId], references: [id])
+  compradorId   String
+  comprador     Comprador  @relation(fields: [compradorId], references: [id])
+  rating        Int // 1 a 5
+  comment       String?
+  // Preenchido de forma assincrona pela Google Cloud Natural Language API (OE4).
+  sentimentScore Float?
+  createdAt     DateTime   @default(now())
 }

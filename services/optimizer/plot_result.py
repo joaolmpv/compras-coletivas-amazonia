@@ -64,7 +64,7 @@ def main():
     ax.set_yticks([])
 
     fig.tight_layout()
-    fig.savefig("../docs/screenshots/otimizacao-resultado.png", facecolor=fig.get_facecolor())
+    fig.savefig("../../docs/screenshots/otimizacao-resultado.png", facecolor=fig.get_facecolor())
     print("Grafico salvo em docs/screenshots/otimizacao-resultado.png")
 
 
