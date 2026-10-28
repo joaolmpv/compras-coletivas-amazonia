@@ -14,6 +14,12 @@
 --      -- nunca as do Comprador B.
 --   2. Sem app.comprador_id setado, nao ve nenhuma linha (fail-closed) nas
 --      mesmas tres tabelas.
+--   3. (E1) GRANT por coluna em PedidoLote: app_comprador NAO consegue
+--      inserir costShare, nem fazer UPDATE em nenhuma coluna; consegue
+--      inserir normalmente sem costShare.
+--   4. (E1) fn_breakdown_lote: retorna a linha do proprio comprador
+--      identificada e a(s) linha(s) de outros participantes com
+--      comprador_id anonimizado (NULL), nunca o id de outro comprador.
 
 BEGIN;
 
@@ -33,7 +39,8 @@ INSERT INTO "HubLogistico" (id, name, city, "fixedDispatchCost", "variableCostPe
   ('test_hub_1', 'Hub Teste RLS', 'Manaus - AM', 1800, 95, 40);
 
 INSERT INTO "Lote" (id, "produtoId", "hubId", status, "totalVolumeM3", "createdAt") VALUES
-  ('test_lote_1', 'test_produto_1', 'test_hub_1', 'ABERTO', 0, now());
+  ('test_lote_1', 'test_produto_1', 'test_hub_1', 'ABERTO', 0, now()),
+  ('test_lote_2', 'test_produto_1', 'test_hub_1', 'ABERTO', 0, now());
 
 INSERT INTO "PedidoLote" (id, "loteId", "compradorId", "volumeM3", "costShare") VALUES
   ('test_pedido_a', 'test_lote_1', 'test_comprador_a', 5.0, 123.45),
@@ -105,5 +112,99 @@ END
 $$;
 
 RESET ROLE;
+
+-- --- Caso 3: GRANT por coluna em PedidoLote (E1, design-backend.md 4.4) ----
+
+SET LOCAL ROLE app_comprador;
+SET LOCAL app.comprador_id = 'test_comprador_a';
+
+DO $$
+DECLARE
+  falhou_como_esperado boolean := false;
+BEGIN
+  BEGIN
+    INSERT INTO "PedidoLote" (id, "loteId", "compradorId", "volumeM3", "costShare")
+    VALUES ('test_pedido_coluna_bloqueado', 'test_lote_2', 'test_comprador_a', 3.0, 999.99);
+  EXCEPTION WHEN insufficient_privilege THEN
+    falhou_como_esperado := true;
+  END;
+
+  IF NOT falhou_como_esperado THEN
+    RAISE EXCEPTION 'FALHA: app_comprador conseguiu inserir PedidoLote com costShare preenchido (GRANT por coluna nao esta bloqueando)';
+  END IF;
+
+  RAISE NOTICE 'PASS -- caso 3a: app_comprador NAO consegue inserir costShare (GRANT por coluna)';
+END
+$$;
+
+DO $$
+BEGIN
+  INSERT INTO "PedidoLote" (id, "loteId", "compradorId", "volumeM3")
+  VALUES ('test_pedido_coluna_ok', 'test_lote_2', 'test_comprador_a', 3.0);
+
+  RAISE NOTICE 'PASS -- caso 3b: app_comprador consegue inserir sem costShare (volumeM3 apenas)';
+END
+$$;
+
+DO $$
+DECLARE
+  falhou_como_esperado boolean := false;
+BEGIN
+  BEGIN
+    UPDATE "PedidoLote" SET "volumeM3" = 999 WHERE id = 'test_pedido_coluna_ok';
+  EXCEPTION WHEN insufficient_privilege THEN
+    falhou_como_esperado := true;
+  END;
+
+  IF NOT falhou_como_esperado THEN
+    RAISE EXCEPTION 'FALHA: app_comprador conseguiu fazer UPDATE em PedidoLote (REVOKE UPDATE nao esta bloqueando)';
+  END IF;
+
+  RAISE NOTICE 'PASS -- caso 3c: app_comprador NAO consegue UPDATE em PedidoLote (REVOKE UPDATE)';
+END
+$$;
+
+RESET ROLE;
+RESET app.comprador_id;
+
+-- --- Caso 4: fn_breakdown_lote anonimiza os demais participantes (E1) ------
+
+SET LOCAL ROLE app_comprador;
+SET LOCAL app.comprador_id = 'test_comprador_a';
+
+DO $$
+DECLARE
+  linha           record;
+  minha_linha_ok  boolean := false;
+  vazou_id_de_b   boolean := false;
+  total_linhas    int := 0;
+BEGIN
+  FOR linha IN SELECT * FROM fn_breakdown_lote('test_lote_1') LOOP
+    total_linhas := total_linhas + 1;
+    IF linha.comprador_id = 'test_comprador_a'
+       AND linha.volume_m3 = 5.0 AND linha.cost_share = 123.45 THEN
+      minha_linha_ok := true;
+    END IF;
+    IF linha.comprador_id = 'test_comprador_b' THEN
+      vazou_id_de_b := true;
+    END IF;
+  END LOOP;
+
+  IF NOT minha_linha_ok THEN
+    RAISE EXCEPTION 'FALHA: fn_breakdown_lote nao retornou a linha identificada do proprio Comprador A';
+  END IF;
+  IF vazou_id_de_b THEN
+    RAISE EXCEPTION 'FALHA: fn_breakdown_lote vazou o compradorId do Comprador B';
+  END IF;
+  IF total_linhas <> 2 THEN
+    RAISE EXCEPTION 'FALHA: fn_breakdown_lote deveria retornar 2 linhas (totais do lote), retornou %', total_linhas;
+  END IF;
+
+  RAISE NOTICE 'PASS -- caso 4: fn_breakdown_lote retorna % linhas do lote, propria identificada, Comprador B anonimizado', total_linhas;
+END
+$$;
+
+RESET ROLE;
+RESET app.comprador_id;
 
 ROLLBACK;
