@@ -1,0 +1,11 @@
+{
+  "commit_hash": "6ea746b8cb7c2adb28f2d821744aacec7c7a91dd",
+  "commit_hash_nota": "HEAD no momento da execucao -- e o commit ANTERIOR ao que adiciona estes resultados, ja que os proprios resultados ainda nao estavam commitados quando o experimento rodou.",
+  "python_version": "3.14.7 (main, Aug 10 2026, 00:00:00) [GCC 16.1.1 20260515 (Red Hat 16.1.1-2)]",
+  "bibliotecas": {
+    "deap": "1.4.4",
+    "numpy": "2.5.3",
+    "scikit-learn": "1.9.1",
+    "matplotlib": "3.11.2"
+  }
+}

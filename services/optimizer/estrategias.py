@@ -25,6 +25,7 @@ from parametros import (
     DENSIDADE_CARGA_KG_POR_M3,
     GA_CXPB,
     GA_GERACOES,
+    GA_GERACOES_V3,
     GA_MUTPB,
     GA_POPULACAO,
     GA_TOURNSIZE,
@@ -105,10 +106,17 @@ def _rodar_ga(clusters, seed):
         creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
         creator.create("Individual", list, fitness=creator.FitnessMin)
 
-    rng_random = random.Random(seed)
+    # Semeia o modulo `random` GLOBAL: os operadores do DEAP (cxTwoPoint,
+    # mutUniformInt, selTournament) chamam `random.*` diretamente, nao aceitam
+    # uma instancia de RNG separada -- uma instancia local (random.Random(seed))
+    # so controlaria a inicializacao da populacao, nao o crossover/mutacao/
+    # selecao, que ficariam dependentes do estado global do processo (ordem de
+    # chamadas anteriores), e portanto NAO reproduziveis pela seed.
+    random.seed(seed)
+    np.random.seed(seed)
 
     toolbox = base.Toolbox()
-    toolbox.register("gene", rng_random.randint, 0, MAX_LOTES_POR_GRUPO - 1)
+    toolbox.register("gene", random.randint, 0, MAX_LOTES_POR_GRUPO - 1)
     toolbox.register("individual", tools.initRepeat, creator.Individual, toolbox.gene, n)
     toolbox.register("population", tools.initRepeat, list, toolbox.individual)
 
@@ -246,3 +254,113 @@ def estrategia_greedy_temporal(pedidos):
         buckets[(p["hub"], p["periodo"], bucket)].append(p)
 
     return list(buckets.values())
+
+
+# ---------------------------------------------------------------------------
+# (e) Sem consolidacao -- cada pedido despachado sozinho (v3, baseline original
+# do prototipo, reintroduzida a pedido do protocolo v3).
+# ---------------------------------------------------------------------------
+
+def estrategia_sem_consolidacao(pedidos):
+    return [[p] for p in pedidos]
+
+
+# ---------------------------------------------------------------------------
+# v3: nucleo NSGA-II (aptidao multiobjetivo: custo + tempo de espera medio).
+#
+# Mantido SEPARADO de `_rodar_ga` (nucleo mono-objetivo usado pela v1/v2) para
+# nao quebrar a reprodutibilidade de `experimento.py`/`experimento_v2.py` --
+# aqueles scripts continuam chamando `estrategia_kmeans_ga`/`estrategia_ag_direto`
+# exatamente como rodaram originalmente.
+# ---------------------------------------------------------------------------
+
+def _rodar_ga_nsga2(clusters, seed):
+    n = len(clusters)
+
+    if not hasattr(creator, "FitnessMulti"):
+        creator.create("FitnessMulti", base.Fitness, weights=(-1.0, -1.0))
+        creator.create("IndividualMulti", list, fitness=creator.FitnessMulti)
+
+    # Ver comentario equivalente em _rodar_ga: os operadores do DEAP usam
+    # `random.*` global, nao uma instancia local -- precisa semear o modulo
+    # inteiro, nao só os sorteios de cxpb/mutpb escritos explicitamente abaixo.
+    random.seed(seed)
+    np.random.seed(seed)
+
+    def avaliar(individuo):
+        lotes = _montar_lotes_de_assignment(individuo, clusters)
+        custo = custo_total_particao(lotes)
+        esperas = tempo_espera_particao(lotes)
+        espera_media = sum(esperas) / len(esperas) if esperas else 0.0
+        return custo, espera_media
+
+    toolbox = base.Toolbox()
+    toolbox.register("gene", random.randint, 0, MAX_LOTES_POR_GRUPO - 1)
+    toolbox.register(
+        "individual", tools.initRepeat, creator.IndividualMulti, toolbox.gene, n
+    )
+    toolbox.register("population", tools.initRepeat, list, toolbox.individual)
+    toolbox.register("evaluate", avaliar)
+    toolbox.register("mate", tools.cxTwoPoint)
+    toolbox.register(
+        "mutate", tools.mutUniformInt, low=0, up=MAX_LOTES_POR_GRUPO - 1, indpb=0.2
+    )
+    toolbox.register("select", tools.selNSGA2)
+
+    populacao = toolbox.population(n=GA_POPULACAO)
+    for ind, fit in zip(populacao, map(toolbox.evaluate, populacao)):
+        ind.fitness.values = fit
+    populacao = toolbox.select(populacao, len(populacao))
+
+    minimos_custo_por_geracao = [min(ind.fitness.values[0] for ind in populacao)]
+
+    for _gen in range(1, GA_GERACOES_V3):
+        descendentes = tools.selTournamentDCD(populacao, len(populacao))
+        descendentes = [toolbox.clone(ind) for ind in descendentes]
+
+        for ind1, ind2 in zip(descendentes[::2], descendentes[1::2]):
+            if random.random() <= GA_CXPB:
+                toolbox.mate(ind1, ind2)
+            if random.random() <= GA_MUTPB:
+                toolbox.mutate(ind1)
+            if random.random() <= GA_MUTPB:
+                toolbox.mutate(ind2)
+            del ind1.fitness.values
+            del ind2.fitness.values
+
+        invalidos = [ind for ind in descendentes if not ind.fitness.valid]
+        for ind, fit in zip(invalidos, map(toolbox.evaluate, invalidos)):
+            ind.fitness.values = fit
+
+        populacao = toolbox.select(populacao + descendentes, GA_POPULACAO)
+        minimos_custo_por_geracao.append(min(ind.fitness.values[0] for ind in populacao))
+
+    custo_final_min = minimos_custo_por_geracao[-1]
+    geracao_convergencia = next(
+        g for g, valor in enumerate(minimos_custo_por_geracao) if np.isclose(valor, custo_final_min)
+    )
+
+    frente = tools.sortNondominated(populacao, len(populacao), first_front_only=True)[0]
+    frente_pareto = []
+    vistos = set()
+    for ind in frente:
+        chave = ind.fitness.values
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        custo, espera = ind.fitness.values
+        lotes = _montar_lotes_de_assignment(ind, clusters)
+        frente_pareto.append({"custo": custo, "espera_media": espera, "lotes": lotes})
+    frente_pareto.sort(key=lambda p: p["custo"])
+
+    return frente_pareto, minimos_custo_por_geracao, geracao_convergencia
+
+
+def estrategia_kmeans_ga_nsga2(pedidos, seed, m):
+    clusters = _clusterizar(pedidos, m)
+    return _rodar_ga_nsga2(clusters, seed)
+
+
+def estrategia_ag_direto_nsga2(pedidos, seed):
+    clusters = _clusters_identidade(pedidos)
+    return _rodar_ga_nsga2(clusters, seed)

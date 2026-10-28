@@ -43,10 +43,17 @@ AEREO_CAPACIDADE_MAX_KG = 500.0
 MAX_LOTES_POR_GRUPO = 6  # genes disponiveis para o AG agrupar clusters por (hub, periodo)
 
 GA_POPULACAO = 80
-GA_GERACOES = 60
+GA_GERACOES = 60  # usado por v1/v2 (_rodar_ga) -- NAO mude, quebraria a reprodutibilidade das duas ja commitadas
 GA_CXPB = 0.6
 GA_MUTPB = 0.3
 GA_TOURNSIZE = 3
+
+# v3: 60 nao estabilizava nas seeds de ajuste para n=50,m=4 (2.47% de variacao
+# nas ultimas 10 geracoes, acima do limiar de 1% fixado a priori, calculado
+# ANTES de rodar o experimento v3). Com 90, o mesmo caso estabiliza (0.61%).
+# Usado apenas pelo nucleo NSGA-II (_rodar_ga_nsga2) -- ver PARAMETROS.md,
+# secao "v3 -- verificacao de convergencia".
+GA_GERACOES_V3 = 90
 
 LIMIAR_TEMPORAL_DIAS = 3
 

@@ -4,6 +4,65 @@ Todo parâmetro usado em `custo.py` e `instancias.py` está listado aqui. Nenhum
 valor com impacto no resultado foi inventado silenciosamente: ou tem fonte
 citável, ou está marcado como premissa (e por quê é uma premissa razoável).
 
+## Histórico de versões — o que mudou entre v1, v2 e v3
+
+| | v1 | v2 | v3 (referência final) |
+|---|---|---|---|
+| Granularidade do K-Means | `k_por_grupo=4` fixo | `k = ceil(m·vol/cap)`, `m` ajustado em `{2,3,4,6,8}` | mesma regra, `m` **re-ajustado do zero** (v2 não é confiável — ver ERRATA) |
+| Instância por tamanho | 1 fixa, reusada em 30 runs do AG | 1 fixa (mesma) | **30 instâncias distintas** por tamanho, comparação pareada |
+| Estratégias | kmeans_ga, greedy_volume, greedy_temporal | + ag_direto (controle sem K-Means) | + sem_consolidacao (5 estratégias) |
+| Fitness do AG | mono-objetivo (custo) | mono-objetivo (custo) | **multiobjetivo (custo + espera) via NSGA-II**, fronteira de Pareto reportada |
+| Tempo de espera | não medido | medido, não otimizado pelo AG | medido para as 5 estratégias; o AG pode otimizá-lo via NSGA-II (ver fronteira), mas a tabela comparativa usa o ponto de menor custo |
+| `GA_GERACOES` | 60 | 60 | 90 (60 não estabilizava em todos os casos — ver verificação de convergência) |
+| Bug de seed (RNG global do DEAP) | presente, não detectado | presente, não detectado | **corrigido** — única versão com reprodutibilidade de seed verificada (`teste_reprodutibilidade.py`) |
+| Critério OE1 (≥15%) vs `greedy_volume` | não atingido (0.0%, -0.3%, -18.4%) | não atingido (0.0%, 3.6%, -1.0%) | não atingido (3.3%, 2.4%, -3.0%) |
+| Critério OE1 (≥15%) vs `greedy_temporal` | parcial (13.4%, 59.2%, 57.9% — falha n=10) | parcial (13.4%, 60.8%, 64.1% — falha n=10) | **atingido nas três** (32.8%, 61.2%, 62.8%) |
+
+v1 e v2 continuam no histórico do git (commits `435a2ed` e `6ea746b`) como
+etapas da iteração — não foram apagadas nem re-executadas. v3 é a versão que
+deve ser citada no TCC como resultado do OE1.
+
+## ERRATA — bug de seed em v1 e v2 (corrigido na v3)
+
+**O que foi afetado**: `_rodar_ga` (v1/v2) e a primeira versão de
+`_rodar_ga_nsga2` (v3, antes da correção) semeavam apenas a geração inicial da
+população com uma instância local de `random.Random(seed)`. Os operadores do
+DEAP efetivamente usados na busca —`tools.cxTwoPoint` (crossover),
+`tools.mutUniformInt` (mutação), `tools.selTournament`/`selNSGA2`/
+`selTournamentDCD` (seleção) — chamam o módulo `random` **global** do Python
+internamente; eles não aceitam uma instância de RNG separada. Como
+consequência, o crossover, a mutação e a seleção — ou seja, a maior parte do
+que o AG realmente faz a cada geração — dependiam do estado global do
+`random` no momento da chamada (que depende da ordem de execução do processo),
+não da `seed` documentada.
+
+**O que isso significa na prática**: os valores de custo e tempo de espera
+reportados em v1 e v2 (incluindo o `m` escolhido no ajuste da v2) são
+execuções reais que de fato aconteceram — não foram inventados — mas **não
+são reproduzíveis executando o mesmo script com a mesma seed novamente**; uma
+nova execução com "a mesma seed" pode (e na prática deu, ao gerar a v3)
+produzir um número diferente, porque a seed nunca controlou o processo
+inteiro como a documentação de v1/v2 afirmava. As tendências qualitativas
+reportadas (AG perdendo para `greedy_volume`, custo piorando
+monotonicamente com `m`, gap grande de tempo de espera) vieram de muitas
+execuções estocásticas reais e são plausivelmente robustas, mas os valores
+pontuais específicos de v1/v2 não têm a garantia de reprodutibilidade que foi
+documentada para eles.
+
+**O que foi corrigido na v3**: `random.seed(seed)` e `np.random.seed(seed)`
+são chamados no início de cada execução do AG (mono e multiobjetivo),
+semeando o módulo global antes de qualquer chamada aos operadores do DEAP.
+Verificado: mesma seed + mesma instância + mesmo `m` → resultado byte-a-byte
+idêntico em chamadas repetidas (ver também o teste automatizado
+`teste_reprodutibilidade.py`, que verifica isso entre PROCESSOS separados,
+não só dentro do mesmo processo Python).
+
+**v1 e v2 permanecem no histórico do git como estavam, sem re-execução** —
+são etapas supersedidas da iteração, não a referência final. **A v3 é a
+referência reprodutível do OE1.** O ajuste de `m` e dos limiares do
+`greedy_volume` foi refeito do zero na v3 com o RNG corrigido (não herdado da
+v2 — o valor de `m` escolhido na v2 não é confiável, pelo motivo acima).
+
 ## Custo por modal
 
 | Parâmetro | Valor | Status | Fonte / justificativa |
@@ -93,12 +152,34 @@ tamanho do espaço de busca; genomas maiores (mais clusters, ou um por
 pedido) ficam mais difíceis de otimizar no mesmo orçamento computacional, e
 isso pesa mais do que o ganho teórico de granularidade.
 
+**Nota de escopo (não corrigida, sinalizada por transparência)**: o ajuste de
+`m` na v3 reusa `tuning.ajustar_m`, que roda o núcleo MONO-objetivo
+(`estrategia_kmeans_ga`, `GA_GERACOES=60`) para escolher `m` — não o núcleo
+NSGA-II (`GA_GERACOES_V3=90`) usado na avaliação final. O `m` escolhido
+provavelmente não seria diferente (as margens entre `m=2` e os demais
+candidatos são grandes e consistentes em todas as instâncias — ver tabela de
+ajuste), mas tecnicamente é um algoritmo e orçamento diferentes do que é
+realmente avaliado. Não foi corrigido nesta rodada; fica registrado como
+limitação conhecida, não como algo verificado.
+
 Esta regra e o conjunto `M_CANDIDATOS`/`LIMIAR_VOLUME_FRACOES_CANDIDATAS`
 foram escritos e commitados ANTES de rodar o experimento v2 -- não foram
 ajustados depois de ver o resultado final para "bater" o critério de 15%. O
 resultado completo (custo e tempo de espera, quatro estratégias) está em
 `docs/oe1-tabela-resumo-v2-k-por-m.md`, sem alteração posterior, mesmo
 ficando abaixo de 15% contra `greedy_volume`.
+
+## v3 — verificação de convergência
+
+Critério de estabilização fixado antes de checar: variação do custo mínimo da
+população entre a geração `GA_GERACOES-10` e `GA_GERACOES-1` menor que 1%.
+Com `GA_GERACOES=60` (valor de v1/v2), `n=50, m=4` não estabilizava (2.47%).
+Testado com 90 gerações: estabiliza (0.61%). `GA_GERACOES_V3=90` foi fixado
+para a v3 (ver `parametros.py` — `GA_GERACOES` original de v1/v2 foi mantido
+intocado para não quebrar a reprodutibilidade daquelas duas, apesar da
+ERRATA acima sobre o bug de seed). Reverificado depois da correção do bug de
+seed, já com o `m` realmente escolhido na v3 (m=2 nas três instâncias): 0.000%
+de variação nas últimas 10 gerações nas três — estabilizado com folga.
 
 ## v2 — controle: AG direto (sem K-Means)
 
