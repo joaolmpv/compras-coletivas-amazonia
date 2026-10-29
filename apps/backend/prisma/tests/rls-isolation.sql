@@ -2,36 +2,64 @@
 --
 -- Roda inteiramente dentro de UMA transacao com ROLLBACK no final -- nao deixa
 -- nenhum dado de teste no banco. Assume a migration
--- 20260925152119_enable_rls_comprador_lote_pedidolote_avaliacao ja aplicada.
+-- 20260925152119_enable_rls_comprador_lote_pedidolote_avaliacao e as
+-- migrations de roles (app_backend/app_service/app_auth/app_definer) ja
+-- aplicadas.
 --
 -- Uso:
 --   docker exec -i tcc_postgres psql -U postgres -d tcc_db -v ON_ERROR_STOP=1 \
 --     < apps/backend/prisma/tests/rls-isolation.sql
 --
+-- Mecanismo de relatorio: cada caso grava um resultado em
+-- "resultados_teste" (tabela temporaria) via pg_temp.registrar(), em vez
+-- de so RAISE NOTICE -- isso deixa o script rodar TODOS os casos numa
+-- execucao so (nao aborta no primeiro problema) e, no final, um DO faz
+-- RAISE EXCEPTION se existir qualquer linha FAIL -- combinado com
+-- `-v ON_ERROR_STOP=1`, isso faz o psql sair com codigo != 0 sempre que
+-- houver falha, sem precisar de grep externo no output.
+--
+-- Testes de app_backend conectado DE VERDADE (nao SET ROLE a partir de
+-- postgres) ficam em rls-app-backend.sql, arquivo separado -- SET ROLE
+-- verifica membership contra session_user, e postgres (superuser) sempre
+-- passa esse check independente de membership real, entao esse arquivo
+-- usa uma conexao de verdade pra exercitar o enforcement de membership.
+--
 -- Casos cobertos:
---   1. SET LOCAL ROLE app_comprador + SET LOCAL app.comprador_id = '<A>'
---      so ve linhas do proprio Comprador A em Comprador, PedidoLote e Avaliacao
---      -- nunca as do Comprador B.
---   2. Sem app.comprador_id setado, nao ve nenhuma linha (fail-closed) nas
---      mesmas tres tabelas.
---   3. (E1) GRANT por coluna em PedidoLote: app_comprador NAO consegue
---      inserir costShare, nem fazer UPDATE em nenhuma coluna; consegue
---      inserir normalmente sem costShare.
---   4. (E1, revisado no PR #1) fn_breakdown_lote: fail-closed sem identidade;
---      zero linhas se o comprador nao participa do lote; propria linha
---      identificada e demais anonimizadas se participa; funcao continua
---      lendo a tabela real mesmo se app_comprador criar uma tabela
---      temporaria chamada "PedidoLote" na propria sessao (ataque de
---      search_path/pg_temp contra SECURITY DEFINER).
---   5. (E1) GRANT por coluna em Avaliacao: app_comprador NAO consegue
---      inserir sentimentScore.
---   6. (E1) has_table_privilege(app_comprador, SELECT) = false para
---      Usuario, SessaoRefreshToken, LogAuditoria, Pagamento, Repasse.
---   7. (E1) CHECK papel<->perfil de Usuario -- todos os ramos (aceitos e
---      rejeitados).
---   8. (E1) LogAuditoria: UPDATE, DELETE e TRUNCATE todos bloqueados.
+--   1. Comprador A ve so as proprias linhas (Comprador, PedidoLote, Avaliacao).
+--   2. Sem app.comprador_id, nenhuma linha visivel (fail-closed).
+--   3. GRANT por coluna em PedidoLote (costShare bloqueado, UPDATE bloqueado).
+--   4. fn_breakdown_lote: fail-closed, restrito a participante, anonimiza
+--      demais participantes, resistente a ataque de tabela temporaria.
+--   5. GRANT por coluna em Avaliacao (sentimentScore bloqueado).
+--   6. has_table_privilege(app_comprador, SELECT) = false nas 5 tabelas protegidas.
+--   7. CHECK papel<->perfil de Usuario -- todos os ramos.
+--   8. LogAuditoria: UPDATE, DELETE e TRUNCATE bloqueados.
+--   9. app_service preenche costShare em PedidoLote.
+--  10. app_service NAO consegue UPDATE/DELETE em LogAuditoria (so INSERT).
+--  11. app_definer: dono de fn_breakdown_lote (catalogo) + funcao funciona via app_comprador.
+--  12. app_auth: le Usuario, NAO le PedidoLote nem Pagamento.
 
 BEGIN;
+
+CREATE TEMP TABLE resultados_teste (
+  id SERIAL PRIMARY KEY,
+  caso text NOT NULL,
+  status text NOT NULL,
+  detalhe text
+);
+
+-- SECURITY DEFINER de proposito: os casos chamam registrar() depois de
+-- SET LOCAL ROLE pra app_comprador/app_service/app_auth, que nao tem (e
+-- nao deveria ter) GRANT na tabela temporaria -- so quem criou a tabela
+-- (postgres, dono da funcao) tem. Sem isso, o PROPRIO mecanismo de
+-- relatorio do teste falha com "permission denied", nao o teste em si.
+CREATE OR REPLACE FUNCTION pg_temp.registrar(p_caso text, p_ok boolean, p_detalhe text DEFAULT NULL)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  INSERT INTO resultados_teste (caso, status, detalhe)
+  VALUES (p_caso, CASE WHEN p_ok THEN 'PASS' ELSE 'FAIL' END, p_detalhe);
+END;
+$$;
 
 -- --- Fixtures, inseridas como postgres (superuser bypassa RLS) -------------
 
@@ -80,20 +108,12 @@ BEGIN
   SELECT EXISTS(SELECT 1 FROM "PedidoLote" WHERE id = 'test_pedido_b')    INTO ve_pedido_b;
   SELECT EXISTS(SELECT 1 FROM "Avaliacao"  WHERE id = 'test_avaliacao_b') INTO ve_avaliacao_b;
 
-  IF cnt_comprador <> 1 THEN
-    RAISE EXCEPTION 'FALHA (Comprador): A deveria ver 1 linha (a propria), viu %', cnt_comprador;
-  END IF;
-  IF cnt_pedido <> 1 THEN
-    RAISE EXCEPTION 'FALHA (PedidoLote): A deveria ver 1 linha (a propria), viu %', cnt_pedido;
-  END IF;
-  IF cnt_avaliacao <> 1 THEN
-    RAISE EXCEPTION 'FALHA (Avaliacao): A deveria ver 1 linha (a propria), viu %', cnt_avaliacao;
-  END IF;
-  IF ve_pedido_b OR ve_avaliacao_b THEN
-    RAISE EXCEPTION 'FALHA: Comprador A conseguiu ver linha do Comprador B (PedidoLote=%, Avaliacao=%)', ve_pedido_b, ve_avaliacao_b;
-  END IF;
-
-  RAISE NOTICE 'PASS -- caso 1: Comprador A ve so as proprias linhas (Comprador=%, PedidoLote=%, Avaliacao=%), nunca as do B', cnt_comprador, cnt_pedido, cnt_avaliacao;
+  PERFORM pg_temp.registrar(
+    'caso 1: Comprador A ve so as proprias linhas',
+    cnt_comprador = 1 AND cnt_pedido = 1 AND cnt_avaliacao = 1 AND NOT ve_pedido_b AND NOT ve_avaliacao_b,
+    format('Comprador=%s PedidoLote=%s Avaliacao=%s ve_pedido_b=%s ve_avaliacao_b=%s',
+      cnt_comprador, cnt_pedido, cnt_avaliacao, ve_pedido_b, ve_avaliacao_b)
+  );
 END
 $$;
 
@@ -114,11 +134,11 @@ BEGIN
   SELECT count(*) INTO cnt_pedido    FROM "PedidoLote" WHERE id IN ('test_pedido_a', 'test_pedido_b');
   SELECT count(*) INTO cnt_avaliacao FROM "Avaliacao"  WHERE id IN ('test_avaliacao_a', 'test_avaliacao_b');
 
-  IF cnt_comprador <> 0 OR cnt_pedido <> 0 OR cnt_avaliacao <> 0 THEN
-    RAISE EXCEPTION 'FALHA: sem app.comprador_id deveria ver 0 linhas, viu Comprador=%, PedidoLote=%, Avaliacao=%', cnt_comprador, cnt_pedido, cnt_avaliacao;
-  END IF;
-
-  RAISE NOTICE 'PASS -- caso 2: sem app.comprador_id setado, nenhuma linha visivel (fail-closed)';
+  PERFORM pg_temp.registrar(
+    'caso 2: sem app.comprador_id, fail-closed',
+    cnt_comprador = 0 AND cnt_pedido = 0 AND cnt_avaliacao = 0,
+    format('Comprador=%s PedidoLote=%s Avaliacao=%s', cnt_comprador, cnt_pedido, cnt_avaliacao)
+  );
 END
 $$;
 
@@ -139,12 +159,7 @@ BEGIN
   EXCEPTION WHEN insufficient_privilege THEN
     falhou_como_esperado := true;
   END;
-
-  IF NOT falhou_como_esperado THEN
-    RAISE EXCEPTION 'FALHA: app_comprador conseguiu inserir PedidoLote com costShare preenchido (GRANT por coluna nao esta bloqueando)';
-  END IF;
-
-  RAISE NOTICE 'PASS -- caso 3a: app_comprador NAO consegue inserir costShare (GRANT por coluna)';
+  PERFORM pg_temp.registrar('caso 3a: app_comprador NAO insere costShare', falhou_como_esperado);
 END
 $$;
 
@@ -152,8 +167,7 @@ DO $$
 BEGIN
   INSERT INTO "PedidoLote" (id, "loteId", "compradorId", "volumeM3")
   VALUES ('test_pedido_coluna_ok', 'test_lote_2', 'test_comprador_a', 3.0);
-
-  RAISE NOTICE 'PASS -- caso 3b: app_comprador consegue inserir sem costShare (volumeM3 apenas)';
+  PERFORM pg_temp.registrar('caso 3b: app_comprador insere sem costShare', true);
 END
 $$;
 
@@ -166,12 +180,7 @@ BEGIN
   EXCEPTION WHEN insufficient_privilege THEN
     falhou_como_esperado := true;
   END;
-
-  IF NOT falhou_como_esperado THEN
-    RAISE EXCEPTION 'FALHA: app_comprador conseguiu fazer UPDATE em PedidoLote (REVOKE UPDATE nao esta bloqueando)';
-  END IF;
-
-  RAISE NOTICE 'PASS -- caso 3c: app_comprador NAO consegue UPDATE em PedidoLote (REVOKE UPDATE)';
+  PERFORM pg_temp.registrar('caso 3c: app_comprador NAO faz UPDATE em PedidoLote', falhou_como_esperado);
 END
 $$;
 
@@ -179,27 +188,18 @@ RESET ROLE;
 RESET app.comprador_id;
 
 -- --- Caso 4: fn_breakdown_lote (E1, revisado no PR #1) ---------------------
--- Daqui em diante, cada DO $$ captura a propria falha (nao usa RAISE
--- EXCEPTION pra abortar o script) e imprime PASS ou FAIL -- um caso por
--- linha, pra dar pra ver o relatorio completo numa unica execucao.
 
--- 4a: sem identidade -> 0 linhas (fail-closed)
 SET LOCAL ROLE app_comprador;
 DO $$
 DECLARE
   total int;
 BEGIN
   SELECT count(*) INTO total FROM fn_breakdown_lote('test_lote_1');
-  IF total = 0 THEN
-    RAISE NOTICE 'PASS -- caso 4a: breakdown sem identidade retorna 0 linhas';
-  ELSE
-    RAISE NOTICE 'FAIL -- caso 4a: breakdown sem identidade retornou % linhas (esperado 0)', total;
-  END IF;
+  PERFORM pg_temp.registrar('caso 4a: breakdown sem identidade -> 0 linhas', total = 0, format('retornou %s', total));
 END
 $$;
 RESET ROLE;
 
--- 4b: comprador que NAO participa do lote -> 0 linhas
 SET LOCAL ROLE app_comprador;
 SET LOCAL app.comprador_id = 'test_comprador_c';
 DO $$
@@ -207,17 +207,12 @@ DECLARE
   total int;
 BEGIN
   SELECT count(*) INTO total FROM fn_breakdown_lote('test_lote_1');
-  IF total = 0 THEN
-    RAISE NOTICE 'PASS -- caso 4b: breakdown de nao-participante (Comprador C) retorna 0 linhas';
-  ELSE
-    RAISE NOTICE 'FAIL -- caso 4b: breakdown de nao-participante retornou % linhas (esperado 0)', total;
-  END IF;
+  PERFORM pg_temp.registrar('caso 4b: breakdown de nao-participante -> 0 linhas', total = 0, format('retornou %s', total));
 END
 $$;
 RESET ROLE;
 RESET app.comprador_id;
 
--- 4c: participante -> propria linha identificada, demais anonimas
 SET LOCAL ROLE app_comprador;
 SET LOCAL app.comprador_id = 'test_comprador_a';
 DO $$
@@ -238,19 +233,16 @@ BEGIN
     END IF;
   END LOOP;
 
-  IF minha_linha_ok AND NOT vazou_id_de_b AND total_linhas = 2 THEN
-    RAISE NOTICE 'PASS -- caso 4c: breakdown de participante -- % linhas, propria identificada, Comprador B anonimizado', total_linhas;
-  ELSE
-    RAISE NOTICE 'FAIL -- caso 4c: minha_linha_ok=%, vazou_id_de_b=%, total_linhas=%', minha_linha_ok, vazou_id_de_b, total_linhas;
-  END IF;
+  PERFORM pg_temp.registrar(
+    'caso 4c: breakdown de participante -- propria identificada, B anonimizado',
+    minha_linha_ok AND NOT vazou_id_de_b AND total_linhas = 2,
+    format('minha_linha_ok=%s vazou_id_de_b=%s total_linhas=%s', minha_linha_ok, vazou_id_de_b, total_linhas)
+  );
 END
 $$;
 RESET ROLE;
 RESET app.comprador_id;
 
--- 4d: ataque via tabela temporaria "PedidoLote" -- funcao deve continuar
--- lendo a tabela REAL (public."PedidoLote"), nao a fake da sessao do
--- atacante.
 SET LOCAL ROLE app_comprador;
 SET LOCAL app.comprador_id = 'test_comprador_a';
 DO $$
@@ -271,7 +263,8 @@ BEGIN
   END;
 
   IF NOT consegue_criar_temp THEN
-    RAISE NOTICE 'PASS (parcial) -- caso 4d: app_comprador NAO tem privilegio de criar tabela temporaria -- ataque nem chega a ser possivel, qualificacao public. nao foi exercitada';
+    PERFORM pg_temp.registrar('caso 4d: ataque de tabela temporaria', true,
+      'app_comprador nao tem privilegio de criar tabela temp -- ataque nem chega a ser possivel');
   ELSE
     FOR linha IN SELECT * FROM fn_breakdown_lote('test_lote_1') LOOP
       total_linhas := total_linhas + 1;
@@ -285,11 +278,11 @@ BEGIN
 
     DROP TABLE pg_temp."PedidoLote";
 
-    IF NOT vazou_fake AND minha_linha_ok AND total_linhas = 2 THEN
-      RAISE NOTICE 'PASS -- caso 4d: app_comprador criou tabela temporaria "PedidoLote", funcao continuou lendo a tabela real (public."PedidoLote")';
-    ELSE
-      RAISE NOTICE 'FAIL -- caso 4d: vazou_fake=%, minha_linha_ok=%, total_linhas=% (funcao pode ter lido a tabela temporaria fake)', vazou_fake, minha_linha_ok, total_linhas;
-    END IF;
+    PERFORM pg_temp.registrar(
+      'caso 4d: funcao resiste a ataque de tabela temporaria "PedidoLote"',
+      NOT vazou_fake AND minha_linha_ok AND total_linhas = 2,
+      format('vazou_fake=%s minha_linha_ok=%s total_linhas=%s', vazou_fake, minha_linha_ok, total_linhas)
+    );
   END IF;
 END
 $$;
@@ -311,24 +304,21 @@ BEGIN
   EXCEPTION WHEN insufficient_privilege THEN
     bloqueado := true;
   END;
-
-  IF bloqueado THEN
-    RAISE NOTICE 'PASS -- caso 5a: app_comprador NAO consegue inserir sentimentScore em Avaliacao';
-  ELSE
-    RAISE NOTICE 'FAIL -- caso 5a: app_comprador conseguiu inserir sentimentScore (GRANT por coluna nao esta bloqueando)';
-  END IF;
+  PERFORM pg_temp.registrar('caso 5a: app_comprador NAO insere sentimentScore', bloqueado);
 END
 $$;
 
 DO $$
+DECLARE
+  ok boolean := true;
 BEGIN
   BEGIN
     INSERT INTO "Avaliacao" (id, "fornecedorId", "compradorId", rating, comment)
     VALUES ('test_avaliacao_sem_sentimento', 'test_fornecedor_1', 'test_comprador_a', 4, 'Chegou no prazo.');
-    RAISE NOTICE 'PASS -- caso 5b: app_comprador consegue inserir Avaliacao sem sentimentScore';
   EXCEPTION WHEN insufficient_privilege THEN
-    RAISE NOTICE 'FAIL -- caso 5b: insercao sem sentimentScore foi bloqueada (nao deveria)';
+    ok := false;
   END;
+  PERFORM pg_temp.registrar('caso 5b: app_comprador insere Avaliacao sem sentimentScore', ok);
 END
 $$;
 
@@ -345,11 +335,7 @@ DECLARE
 BEGIN
   FOREACH t IN ARRAY tabelas LOOP
     EXECUTE format('SELECT has_table_privilege(%L, %L, %L)', 'app_comprador', format('public.%I', t), 'SELECT') INTO pode;
-    IF pode THEN
-      RAISE NOTICE 'FAIL -- caso 6 (%): has_table_privilege retornou TRUE (app_comprador NAO deveria ter SELECT)', t;
-    ELSE
-      RAISE NOTICE 'PASS -- caso 6 (%): has_table_privilege(app_comprador, SELECT) = false', t;
-    END IF;
+    PERFORM pg_temp.registrar(format('caso 6 (%s): app_comprador sem SELECT', t), NOT pode);
   END LOOP;
 END
 $$;
@@ -376,11 +362,15 @@ BEGIN
     falhou := true;
   END;
 
-  IF falhou = (NOT p_deveria_aceitar) THEN
-    RAISE NOTICE 'PASS -- caso 7 (%): %', p_desc, CASE WHEN p_deveria_aceitar THEN 'aceito como esperado' ELSE 'rejeitado pelo CHECK como esperado' END;
-  ELSE
-    RAISE NOTICE 'FAIL -- caso 7 (%): esperava % mas %', p_desc, CASE WHEN p_deveria_aceitar THEN 'aceitar' ELSE 'rejeitar' END, CASE WHEN falhou THEN 'rejeitou' ELSE 'aceitou' END;
-  END IF;
+  PERFORM pg_temp.registrar(
+    format('caso 7 (%s)', p_desc),
+    falhou = (NOT p_deveria_aceitar),
+    CASE WHEN p_deveria_aceitar THEN
+      CASE WHEN falhou THEN 'esperava aceitar, rejeitou' ELSE 'aceito como esperado' END
+    ELSE
+      CASE WHEN falhou THEN 'rejeitado pelo CHECK como esperado' ELSE 'esperava rejeitar, aceitou' END
+    END
+  );
 END;
 $$;
 
@@ -398,27 +388,164 @@ INSERT INTO "LogAuditoria" (id, entidade, "entidadeId", acao, "dadosDepois", "ha
 VALUES ('test_log_1', 'Teste', 't1', 'CRIAR', '{}', 'genesis', 'hash-teste-1');
 
 DO $$
+DECLARE
+  bloqueado boolean;
 BEGIN
+  bloqueado := false;
   BEGIN
     UPDATE "LogAuditoria" SET acao = 'ALTERADO' WHERE id = 'test_log_1';
-    RAISE NOTICE 'FAIL -- caso 8a: UPDATE em LogAuditoria NAO foi bloqueado';
   EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'PASS -- caso 8a: UPDATE em LogAuditoria bloqueado (%)', SQLERRM;
+    bloqueado := true;
   END;
+  PERFORM pg_temp.registrar('caso 8a: UPDATE em LogAuditoria bloqueado', bloqueado);
 
+  bloqueado := false;
   BEGIN
     DELETE FROM "LogAuditoria" WHERE id = 'test_log_1';
-    RAISE NOTICE 'FAIL -- caso 8b: DELETE em LogAuditoria NAO foi bloqueado';
   EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'PASS -- caso 8b: DELETE em LogAuditoria bloqueado (%)', SQLERRM;
+    bloqueado := true;
   END;
+  PERFORM pg_temp.registrar('caso 8b: DELETE em LogAuditoria bloqueado', bloqueado);
 
+  bloqueado := false;
   BEGIN
     TRUNCATE "LogAuditoria";
-    RAISE NOTICE 'FAIL -- caso 8c: TRUNCATE em LogAuditoria NAO foi bloqueado';
   EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'PASS -- caso 8c: TRUNCATE em LogAuditoria bloqueado (%)', SQLERRM;
+    bloqueado := true;
   END;
+  PERFORM pg_temp.registrar('caso 8c: TRUNCATE em LogAuditoria bloqueado', bloqueado);
+END
+$$;
+
+-- --- Caso 9-10: app_service (Parte 5/6, design-backend.md 12.1.1) ----------
+
+SET LOCAL ROLE app_service;
+
+DO $$
+DECLARE
+  novo_valor float8;
+BEGIN
+  UPDATE "PedidoLote" SET "costShare" = 555.55 WHERE id = 'test_pedido_a';
+  SELECT "costShare" INTO novo_valor FROM "PedidoLote" WHERE id = 'test_pedido_a';
+  PERFORM pg_temp.registrar('caso 9: app_service preenche costShare em PedidoLote', novo_valor = 555.55,
+    format('costShare ficou %s (esperado 555.55)', novo_valor));
+END
+$$;
+
+DO $$
+DECLARE
+  bloqueado boolean;
+BEGIN
+  bloqueado := false;
+  BEGIN
+    UPDATE "LogAuditoria" SET acao = 'ALTERADO' WHERE id = 'test_log_1';
+  EXCEPTION WHEN insufficient_privilege THEN
+    bloqueado := true;
+  END;
+  PERFORM pg_temp.registrar('caso 10a: app_service NAO faz UPDATE em LogAuditoria', bloqueado);
+
+  bloqueado := false;
+  BEGIN
+    DELETE FROM "LogAuditoria" WHERE id = 'test_log_1';
+  EXCEPTION WHEN insufficient_privilege THEN
+    bloqueado := true;
+  END;
+  PERFORM pg_temp.registrar('caso 10b: app_service NAO faz DELETE em LogAuditoria', bloqueado);
+END
+$$;
+
+RESET ROLE;
+
+-- --- Caso 11: app_definer (Parte 5/6) ---------------------------------------
+
+DO $$
+DECLARE
+  dono          text;
+  pode_login    boolean;
+  pode_bypass   boolean;
+  membro_backend boolean;
+BEGIN
+  SELECT proowner::regrole::text INTO dono FROM pg_proc WHERE proname = 'fn_breakdown_lote';
+  SELECT rolcanlogin, rolbypassrls INTO pode_login, pode_bypass FROM pg_roles WHERE rolname = 'app_definer';
+  SELECT pg_has_role('app_backend', 'app_definer', 'MEMBER') INTO membro_backend;
+
+  PERFORM pg_temp.registrar(
+    'caso 11a: catalogo -- app_definer dono de fn_breakdown_lote, NOLOGIN, sem BYPASSRLS, sem membership de app_backend',
+    dono = 'app_definer' AND NOT pode_login AND NOT pode_bypass AND NOT membro_backend,
+    format('dono=%s rolcanlogin=%s rolbypassrls=%s app_backend_e_membro=%s', dono, pode_login, pode_bypass, membro_backend)
+  );
+END
+$$;
+
+SET LOCAL ROLE app_comprador;
+SET LOCAL app.comprador_id = 'test_comprador_a';
+DO $$
+DECLARE
+  total int;
+BEGIN
+  SELECT count(*) INTO total FROM fn_breakdown_lote('test_lote_1');
+  PERFORM pg_temp.registrar('caso 11b: fn_breakdown_lote funciona via app_comprador (dono agora e app_definer)', total = 2,
+    format('retornou %s linhas (esperado 2)', total));
+END
+$$;
+RESET ROLE;
+RESET app.comprador_id;
+
+-- --- Caso 12: app_auth (Parte 5/6) ------------------------------------------
+
+SET LOCAL ROLE app_auth;
+
+DO $$
+DECLARE
+  cnt int;
+BEGIN
+  SELECT count(*) INTO cnt FROM "Usuario" WHERE id = 'test_u_comprador_ok';
+  PERFORM pg_temp.registrar('caso 12a: app_auth le Usuario', cnt = 1, format('viu %s linha(s)', cnt));
+END
+$$;
+
+DO $$
+DECLARE
+  bloqueado boolean := false;
+BEGIN
+  BEGIN
+    PERFORM 1 FROM "PedidoLote" LIMIT 1;
+  EXCEPTION WHEN insufficient_privilege THEN
+    bloqueado := true;
+  END;
+  PERFORM pg_temp.registrar('caso 12b: app_auth NAO le PedidoLote', bloqueado);
+END
+$$;
+
+DO $$
+DECLARE
+  bloqueado boolean := false;
+BEGIN
+  BEGIN
+    PERFORM 1 FROM "Pagamento" LIMIT 1;
+  EXCEPTION WHEN insufficient_privilege THEN
+    bloqueado := true;
+  END;
+  PERFORM pg_temp.registrar('caso 12c: app_auth NAO le Pagamento', bloqueado);
+END
+$$;
+
+RESET ROLE;
+
+-- --- Relatorio final e verificacao ------------------------------------------
+
+SELECT id, caso, status, detalhe FROM resultados_teste ORDER BY id;
+
+DO $$
+DECLARE
+  cnt_fail int;
+  lista    text;
+BEGIN
+  SELECT count(*), string_agg(caso, '; ') INTO cnt_fail, lista FROM resultados_teste WHERE status = 'FAIL';
+  IF cnt_fail > 0 THEN
+    RAISE EXCEPTION '% caso(s) FALHARAM: %', cnt_fail, lista;
+  END IF;
+  RAISE NOTICE 'TODOS OS % CASOS PASSARAM', (SELECT count(*) FROM resultados_teste);
 END
 $$;
 
