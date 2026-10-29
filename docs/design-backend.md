@@ -1182,49 +1182,55 @@ seção existe para garantir — compare com o estado atual (E1), onde
 esquecer o equivalente hoje significaria rodar como `postgres` e nunca dar
 erro nenhum, só vazar tudo silenciosamente.
 
-### 12.5 Testes novos — escritos em `apps/backend/prisma/tests/rls-isolation.sql`
+### 12.5 Testes novos — implementados e rodando (34 + 4 casos, todos PASS)
 
-Casos 9-14 (ver arquivo para o SQL exato e a saída real):
+`apps/backend/prisma/tests/rls-isolation.sql`, casos 9-12 (ver arquivo
+para o SQL exato):
 
-1. **`app_backend` sem `SET ROLE`** → `SELECT` em `PedidoLote` dá
-   `permission denied`.
-2. **`app_backend` depois de `SET LOCAL ROLE app_comprador` +
-   `app.comprador_id`** → RLS volta a valer normalmente.
-3. **`app_service` preenche `costShare`** com sucesso, mas **não consegue
-   `UPDATE`/`DELETE` em `LogAuditoria`**.
-4. **`app_definer` é dono de `fn_breakdown_lote`** (confirmado via
-   catálogo) **e a função funciona quando chamada por `app_comprador`**.
-5. **`app_auth` lê `Usuario` e NÃO lê `PedidoLote`/`Pagamento`**.
-6. **`app_comprador` continua sem acesso** às 5 tabelas protegidas
-   (`Usuario`, `SessaoRefreshToken`, `LogAuditoria`, `Pagamento`,
-   `Repasse`) — reconfirmado depois de todos os `GRANT`s novos desta
-   etapa, não só assumido que continua valendo.
+1. **`app_service` só acrescenta, nunca altera ou apaga** (caso 9): o
+   único `UPDATE` testado é `costShare` em `PedidoLote` — a tabela em
+   que `app_service` efetivamente escreve rateio nesta etapa. Em
+   `LogAuditoria`, `app_service` tem só `INSERT` (nunca `UPDATE`/`DELETE`
+   — caso 10). **Lacuna sinalizada, não testada ainda**: o princípio
+   "`UPDATE` só em colunas de estado, nunca em `valor`/FKs, nunca
+   `DELETE`" também vale para `Pagamento`/`Repasse` (seção 12.1.1), mas
+   não há caso de teste cobrindo isso especificamente — só a tabela
+   `PedidoLote`/`LogAuditoria` foram exercitadas. Caberia um caso 9b/9c
+   quando o código que efetivamente grava `Pagamento`/`Repasse` existir
+   (E4), reforçando o princípio da seção 12.1.1 ("cada etapa traz seu
+   teste").
+2. **`app_definer` — checagem de catálogo completa** (caso 11a): dono de
+   `fn_breakdown_lote` É `app_definer` (não mais `postgres`), `app_definer`
+   é `NOLOGIN`, **sem** `BYPASSRLS`, e **sem** membership de `app_backend`
+   (ninguém precisa `SET ROLE app_definer` diretamente). Caso 11b confirma
+   que a função continua funcionando quando chamada por `app_comprador`
+   depois da troca de dono.
+3. **`app_auth` lê `Usuario` e NÃO lê `PedidoLote`/`Pagamento`** (casos
+   12a-12c).
+4. **`app_comprador` continua sem acesso** às 5 tabelas protegidas —
+   reconfirmado (caso 6, já existente, reexecutado depois de todos os
+   `GRANT`s novos desta etapa).
 
-Metodologia: todos os casos acima usam `SET LOCAL ROLE <role>` a partir da
-mesma conexão `postgres`-autenticada do arquivo de teste — isso é
-equivalente, para fins de checagem de privilégio, a uma conexão real
-autenticada como aquele role (o Postgres avalia privilégios pelo role
-EFETIVO no momento da query, não por como a sessão chegou a ser aquele
-role). Não foi necessário abrir uma segunda conexão `psql -U app_backend`
-de verdade.
+`apps/backend/prisma/tests/rls-app-backend.sql` — **conexão real como
+`app_backend`** (correção em relação à versão anterior desta seção, que
+dizia que isso não seria necessário): `SET ROLE` verifica *membership*
+contra `session_user`, não `current_user` — `postgres`, sendo superuser,
+sempre passa esse check independente de membership real, mesmo depois de
+já ter feito `SET ROLE` para outra coisa. Isso é suficiente para testar
+checagens de **privilégio** (GRANT/política, que avaliam o role efetivo
+no momento da query — aí sim equivalente a uma conexão real), mas não
+para testar o **enforcement de membership do próprio `SET ROLE`** — em
+particular, "`app_backend` não consegue `SET ROLE app_definer`" só prova
+alguma coisa executado por uma conexão de verdade. 4 casos: bloqueio sem
+`SET ROLE`, grafo de membership via `pg_has_role`, `SET ROLE app_definer`
+falhando de verdade, e `SET ROLE app_comprador` desbloqueando.
 
 ### 12.6 `npm run test:rls`
 
-Comando exato (inalterado):
-
 ```bash
-docker exec -i tcc_postgres psql -U postgres -d tcc_db -v ON_ERROR_STOP=1 \
-  < apps/backend/prisma/tests/rls-isolation.sql
+cd apps/backend
+APP_BACKEND_PASSWORD='...' npm run test:rls
 ```
-
-O arquivo foi reestruturado (ver `test(E1): reestrutura rls-isolation.sql`
-no histórico do git): cada caso grava um resultado numa tabela temporária
-em vez de só `RAISE NOTICE`, e um `DO` final lê essa tabela e faz `RAISE
-EXCEPTION` se existir qualquer linha `FAIL` — combinado com `-v
-ON_ERROR_STOP=1`, isso faz o `psql` sair com código `!= 0` sempre que
-houver uma falha, sem precisar de `grep` externo (a ideia do `grep`, na
-versão anterior desta seção, ficou obsoleta — o `RAISE EXCEPTION` resolve
-isso dentro do próprio SQL).
 
 ```json
 // apps/backend/package.json
@@ -1238,15 +1244,36 @@ isso dentro do próprio SQL).
 # apps/backend/scripts/test-rls.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
+: "${APP_BACKEND_PASSWORD:?defina APP_BACKEND_PASSWORD antes de rodar}"
 
 docker exec -i tcc_postgres psql -U postgres -d tcc_db -v ON_ERROR_STOP=1 \
   < prisma/tests/rls-isolation.sql
+
+docker exec -i -e PGPASSWORD="$APP_BACKEND_PASSWORD" tcc_postgres \
+  psql -U app_backend -d tcc_db -v ON_ERROR_STOP=1 \
+  < prisma/tests/rls-app-backend.sql
 ```
 
-Prova de que o mecanismo de código de saída funciona nos dois sentidos
-(com uma falha introduzida de propósito e depois desfeita, sem tocar no
-arquivo versionado) está no relato da sessão que implementou esta etapa —
-não repetido aqui para não duplicar.
+**Explicação do código de saída**: `rls-isolation.sql` grava cada caso
+numa tabela temporária e termina com um `DO` que faz `RAISE EXCEPTION` se
+existir qualquer linha `FAIL` — combinado com `-v ON_ERROR_STOP=1`, isso
+faz o `psql` sair com código `!= 0` sempre que houver falha, sem precisar
+de `grep` externo no output (a ideia de `grep`, de uma versão anterior
+desta seção, ficou obsoleta). `rls-app-backend.sql` usa `RAISE EXCEPTION`
+direto em cada caso (não tem uma tabela de resultados compartilhada — é
+uma conexão/sessão diferente da do primeiro arquivo).
+
+**Rodado de verdade, duas vezes**: com os 38 casos passando, o código de
+saída é `0`. Com uma falha introduzida de propósito (numa cópia
+descartável de `rls-isolation.sql`, nunca no arquivo versionado — a
+mudança foi só trocar `cnt_comprador = 1` por `cnt_comprador = 999` no
+caso 1, roda contra o mesmo banco via `docker exec`), o código de saída
+foi **`3`**, não `1` — esse é o código padrão do `psql` para erro fatal
+de script sob `ON_ERROR_STOP` (0 = sucesso, 1 = erro fatal não relacionado
+a comando SQL, 2 = falha de conexão, 3 = erro fatal de processamento de
+script). O ponto que importa (código de saída reflete a falha, diferente
+de zero) se confirma; o valor exato do código não é `1` como seria
+intuitivo supor.
 
 ### Decisões aprovadas desta seção
 
@@ -1270,6 +1297,33 @@ não repetido aqui para não duplicar.
 6. **`app_auth` novo**: login/refresh/logout/cadastro passam a rodar
    nesse role, não em `app_comprador`/`app_service` — ver 12.1.2 para o
    roteamento exato por rota.
+
+### ❓ Pergunta em aberto para a E6
+
+**Quem calcula o hash encadeado do `LogAuditoria` se `app_service` só tem
+`INSERT`?** A seção 6 descreve a cadeia de hash (`hashAnterior`/
+`hashAtual`) como calculada com um `pg_advisory_xact_lock` + leitura da
+última linha antes de inserir a próxima — mas ler a última linha é um
+`SELECT`, e `app_service` (o role que grava a maior parte dos eventos
+auditáveis: fechamento de lote, pagamento, repasse) **não tem `SELECT` em
+`LogAuditoria`**, só `INSERT` (seção 12.1.1, decisão aprovada). Três
+saídas possíveis, nenhuma escolhida aqui:
+
+**A.** Conceder `SELECT` em `LogAuditoria` para `app_service` também (quebra
+um pouco o princípio "mínimo necessário", mas é pouco risco — `SELECT`
+numa tabela append-only não vaza nada que escrita não já exigisse ler).
+
+**B.** O cálculo do hash roda dentro de uma função `SECURITY DEFINER`
+(dono com `SELECT`+`INSERT`, chamada por `app_service` via `EXECUTE`) —
+mesmo padrão já usado em `fn_breakdown_lote`/`app_definer`, aplicado aqui
+a um papel de "escritor de auditoria".
+
+**C.** O hash é calculado na aplicação (NestJS), não no Postgres — o
+interceptor de auditoria já precisa ter lido o estado anterior pra outros
+fins; `app_service` só faz o `INSERT` com os valores já calculados. Isso
+move a corrida de concorrência (duas transações calculando o "hash
+anterior" ao mesmo tempo) para fora do banco, onde é mais difícil
+serializar com um `pg_advisory_xact_lock`.
 
 ---
 
