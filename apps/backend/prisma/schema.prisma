@@ -3,6 +3,9 @@
 //
 // PostgreSQL (producao), substituindo o protótipo anterior em SQLite
 // (ver database/prisma/schema.prisma, hoje descontinuado).
+//
+// E1 (docs/design-backend.md secao 11): adiciona Usuario, SessaoRefreshToken,
+// Pagamento, Repasse, LogAuditoria, e amplia StatusLote com ENTREGUE/CANCELADO.
 
 generator client {
   provider = "prisma-client-js"
@@ -13,20 +16,76 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum PapelUsuario {
+  COMPRADOR
+  FORNECEDOR
+  ADMIN
+}
+
 enum StatusLote {
   ABERTO
   FECHADO
   DESPACHADO
+  ENTREGUE
+  CANCELADO
+}
+
+enum StatusPagamento {
+  PENDENTE
+  RETIDO
+  LIBERADO
+  REEMBOLSADO
+  EXPIRADO
+}
+
+enum StatusRepasse {
+  AGUARDANDO
+  LIBERADO
+}
+
+// Credencial de autenticacao, separada da identidade de negocio (Comprador/
+// Fornecedor). Admin nao tem perfil (compradorId e fornecedorId ambos null).
+// Consistencia papel<->perfil nao e expressavel no schema do Prisma -- ver
+// CHECK CONSTRAINT na migration (design-backend.md secao 3.1/11).
+model Usuario {
+  id            String               @id @default(cuid())
+  email         String               @unique
+  passwordHash  String // argon2id
+  role          PapelUsuario
+  compradorId   String?              @unique
+  comprador     Comprador?           @relation(fields: [compradorId], references: [id])
+  fornecedorId  String?              @unique
+  fornecedor    Fornecedor?          @relation(fields: [fornecedorId], references: [id])
+  refreshTokens SessaoRefreshToken[]
+  createdAt     DateTime             @default(now())
+}
+
+// Sem RLS -- estado de sessao, nao dado de negocio do comprador. So acessada
+// pelo IdentidadeModule/app_service, nunca por app_comprador diretamente.
+model SessaoRefreshToken {
+  id        String    @id @default(cuid())
+  usuarioId String
+  usuario   Usuario   @relation(fields: [usuarioId], references: [id])
+  familiaId String // agrupa toda a cadeia de rotacao
+  hashToken String    @unique // nunca o token em claro
+  usedAt    DateTime?
+  revokedAt DateTime?
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+
+  @@index([familiaId])
+  @@index([expiresAt])
 }
 
 model Comprador {
-  id           String        @id @default(cuid())
-  name         String
-  document     String        @unique // CNPJ
-  email        String        @unique
-  createdAt    DateTime      @default(now())
-  pedidosLote  PedidoLote[]
-  avaliacoes   Avaliacao[]
+  id          String       @id @default(cuid())
+  name        String
+  document    String       @unique // CNPJ
+  email       String       @unique
+  createdAt   DateTime     @default(now())
+  usuario     Usuario?
+  pedidosLote PedidoLote[]
+  avaliacoes  Avaliacao[]
 }
 
 model Fornecedor {
@@ -35,8 +94,10 @@ model Fornecedor {
   document        String      @unique // CNPJ
   // Calculado pelo modulo de analise de sentimento (OE4) a partir das avaliacoes.
   reputationScore Float?
+  usuario         Usuario?
   produtos        Produto[]
   avaliacoes      Avaliacao[]
+  repasses        Repasse[]
   createdAt       DateTime    @default(now())
 }
 
@@ -62,42 +123,97 @@ model HubLogistico {
 }
 
 model Lote {
-  id             String       @id @default(cuid())
-  produtoId      String
-  produto        Produto      @relation(fields: [produtoId], references: [id])
-  hubId          String
-  hub            HubLogistico @relation(fields: [hubId], references: [id])
-  status         StatusLote   @default(ABERTO)
-  totalVolumeM3  Float        @default(0)
-  totalCost      Float? // preenchido quando o lote fecha (custo fixo + variavel do hub)
-  dispatchDate   DateTime?
-  createdAt      DateTime     @default(now())
-  pedidosLote    PedidoLote[]
+  id            String       @id @default(cuid())
+  produtoId     String
+  produto       Produto      @relation(fields: [produtoId], references: [id])
+  hubId         String
+  hub           HubLogistico @relation(fields: [hubId], references: [id])
+  status        StatusLote   @default(ABERTO)
+  totalVolumeM3 Float        @default(0)
+  totalCost     Float? // preenchido quando o lote fecha (custo fixo + variavel do hub)
+  dispatchDate  DateTime?
+  createdAt     DateTime     @default(now())
+  pedidosLote   PedidoLote[]
+  repasse       Repasse?
 }
 
 model PedidoLote {
-  id          String    @id @default(cuid())
+  id          String     @id @default(cuid())
   loteId      String
-  lote        Lote      @relation(fields: [loteId], references: [id])
+  lote        Lote       @relation(fields: [loteId], references: [id])
   compradorId String
-  comprador   Comprador @relation(fields: [compradorId], references: [id])
+  comprador   Comprador  @relation(fields: [compradorId], references: [id])
   volumeM3    Float
   // Valor rateado do frete deste lote proporcional ao volume do comprador --
   // calculado de forma transacional no fechamento do lote (ver OE2 no README).
+  // Nullable, sem DEFAULT: so e preenchido pelo backend (app_service) no
+  // fechamento -- app_comprador nao tem GRANT UPDATE nesta coluna (ver
+  // migration de GRANTs por coluna, design-backend.md secao 4.4).
   costShare   Float?
+  pagamento   Pagamento?
 
   @@unique([loteId, compradorId])
 }
 
+// Escrow simulado por PedidoLote (design-backend.md secao 5.2). Sem RLS
+// nesta etapa (E1) -- GRANTs/politicas de acesso ficam para a E4, quando o
+// endpoint de pagamento for implementado.
+model Pagamento {
+  id           String          @id @default(cuid())
+  pedidoLoteId String          @unique
+  pedidoLote   PedidoLote      @relation(fields: [pedidoLoteId], references: [id])
+  status       StatusPagamento @default(PENDENTE)
+  valor        Float // = costShare do PedidoLote no momento da criacao
+  gatewayRef   String? // referencia do gateway fake
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+}
+
+// Repasse agregado ao fornecedor, criado quando o Lote entra em ENTREGUE
+// (design-backend.md secao 5.2). Sem RLS nesta etapa (E1), mesma razao do Pagamento.
+model Repasse {
+  id           String        @id @default(cuid())
+  loteId       String        @unique
+  lote         Lote          @relation(fields: [loteId], references: [id])
+  fornecedorId String
+  fornecedor   Fornecedor    @relation(fields: [fornecedorId], references: [id])
+  valorTotal   Float // soma dos Pagamento.valor LIBERADO deste lote
+  status       StatusRepasse @default(AGUARDANDO)
+  createdAt    DateTime      @default(now())
+}
+
 model Avaliacao {
-  id            String     @id @default(cuid())
-  fornecedorId  String
-  fornecedor    Fornecedor @relation(fields: [fornecedorId], references: [id])
-  compradorId   String
-  comprador     Comprador  @relation(fields: [compradorId], references: [id])
-  rating        Int // 1 a 5
-  comment       String?
+  id             String     @id @default(cuid())
+  fornecedorId   String
+  fornecedor     Fornecedor @relation(fields: [fornecedorId], references: [id])
+  compradorId    String
+  comprador      Comprador  @relation(fields: [compradorId], references: [id])
+  rating         Int // 1 a 5
+  comment        String?
   // Preenchido de forma assincrona pela Google Cloud Natural Language API (OE4).
   sentimentScore Float?
-  createdAt     DateTime   @default(now())
+  createdAt      DateTime   @default(now())
+}
+
+// Log de auditoria append-only (design-backend.md secao 6). entidade/entidadeId
+// sao referencias textuais, nao FK -- esta tabela precisa sobreviver mesmo que
+// a linha referenciada em outra tabela seja removida (nao deveria acontecer,
+// mas a trilha de auditoria nao pode depender disso). hashAnterior/hashAtual
+// formam a cadeia; a logica de calculo (advisory lock + sha256) e aplicacao
+// (E6), nao esta migration -- aqui so a tabela e as garantias de imutabilidade
+// (REVOKE + trigger, ver migration dedicada).
+model LogAuditoria {
+  id              String   @id @default(cuid())
+  entidade        String
+  entidadeId      String
+  acao            String
+  atorId          String? // null = job automatico/sistema
+  versaoAlgoritmo String? // tag do otimizador, quando a acao envolve o AG
+  hashEntrada     String? // sha256 do payload de entrada, para acoes que chamam o otimizador
+  dadosDepois     Json
+  hashAnterior    String
+  hashAtual       String   @unique
+  createdAt       DateTime @default(now())
+
+  @@index([entidade, entidadeId])
 }
