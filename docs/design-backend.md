@@ -921,111 +921,186 @@ Ordem de dependência:
 
 ---
 
-## 12. Roles e conexão (proposta — nada aplicado)
+## 12. Roles e conexão (aprovado com ajustes — ver histórico do git para o SQL aplicado)
 
-> Esta seção é só proposta. Nenhum SQL daqui foi executado contra o banco.
 > Objetivo: **o backend nunca conecta como `postgres` em runtime, e
 > esquecer o `SET ROLE` deve falhar (fail-closed) em vez de ignorar o
-> RLS.** Hoje (E1) o `DATABASE_URL` do backend ainda é
+> RLS.** Antes desta etapa (E1 inicial), o `DATABASE_URL` do backend era
 > `postgres:postgrespassword@.../tcc_db` — o próprio role que roda as
-> migrations. Isso significa que, até esta proposta ser implementada,
-> **qualquer query do backend bypassa RLS automaticamente**, porque
-> `postgres` é superuser. É o gap mais importante aberto no projeto hoje.
+> migrations, superuser, bypassando RLS silenciosamente em qualquer
+> esquecimento. As migrations que implementam o que está descrito aqui já
+> foram escritas e aplicadas localmente — ver commits `feat(E1-roles): ...`
+> e `apps/backend/prisma/migrations/`.
 
-### 12.1 Quatro roles
+### 12.1 Cinco roles
 
 | Role | Atributos | Propósito |
 |---|---|---|
-| `app_backend` | `LOGIN NOSUPERUSER NOBYPASSRLS NOINHERIT` | **A única coisa que o `DATABASE_URL` de runtime usa.** Sem nenhum `GRANT` direto em tabela alguma — só existe para, por request, fazer `SET LOCAL ROLE app_comprador` ou `SET LOCAL ROLE app_service`. |
+| `app_backend` | `LOGIN NOSUPERUSER NOBYPASSRLS NOINHERIT` | **A única coisa que o `DATABASE_URL` de runtime usa.** Sem nenhum `GRANT` direto em tabela alguma — só existe para, por request, fazer `SET LOCAL ROLE` para um dos três roles abaixo. |
 | `app_comprador` | `NOLOGIN NOSUPERUSER NOBYPASSRLS` (já existe, inalterado) | Identidade de um comprador autenticado — políticas RLS por `app.comprador_id`, GRANTs por coluna já feitos no E1. |
 | `app_service` | `NOLOGIN NOSUPERUSER NOBYPASSRLS` (novo) | Operações privilegiadas do próprio backend (fechamento de lote, pagamento, repasse, auditoria) — ver 12.1.1. |
+| `app_auth` | `NOLOGIN NOSUPERUSER NOBYPASSRLS` (novo) | Login, refresh, logout, cadastro — ver 12.1.2. |
 | `app_definer` | `NOLOGIN NOSUPERUSER NOBYPASSRLS` (novo) | **Dono só de `fn_breakdown_lote`**, nada mais — substitui `postgres` como dono da função, removendo o superuser de uma função `SECURITY DEFINER` que só precisa de `SELECT` em uma tabela. |
 
-**`NOINHERIT` em `app_backend` é o detalhe que faz o objetivo funcionar, e
-não estava no enunciado — adiciono aqui porque sem ele o design não
-cumpre o que foi pedido.** Por padrão no Postgres, ser *membro* de um role
-já concede as permissões dele automaticamente (`INHERIT`), sem precisar de
-`SET ROLE`. Se `app_backend` fosse `INHERIT` (o padrão), virar membro de
-`app_comprador`/`app_service` já bastaria para ter os privilégios dos
-dois O TEMPO TODO, mesmo sem nunca chamar `SET LOCAL ROLE` — exatamente o
-oposto de "esquecer o SET ROLE deve falhar". Com `NOINHERIT`, `app_backend`
-só tem os privilégios de `app_comprador`/`app_service` **durante** o
-`SET LOCAL ROLE` daquela transação; fora disso, não tem nenhum.
+**`NOINHERIT` em `app_backend`** continua sendo o detalhe que faz o
+objetivo funcionar (não estava no enunciado original, documentado como
+adição minha desde a primeira versão desta seção): sem ele, ser membro de
+`app_comprador`/`app_service`/`app_auth` já concederia os privilégios dos
+três automaticamente, sem precisar de `SET ROLE` nenhum.
+
+**Nota sobre a direção do `GRANT` de `app_auth`**: o pedido descreveu
+`app_auth` como "membro de `app_backend`" — isso, ao pé da letra, seria
+`GRANT app_backend TO app_auth` (o inverso do que faz o sistema
+funcionar). Implementei a direção que é funcionalmente necessária e
+consistente com `app_comprador`/`app_service` (que já eram descritos como
+"`app_backend` membro" DELES, não o contrário): `app_backend` é membro de
+`app_auth`, não o inverso — só assim `app_backend` consegue `SET ROLE
+app_auth`. Sinalizo a correção em vez de aplicar silenciosamente a leitura
+literal, que não teria efeito prático nenhum (nada jamais conecta como
+`app_auth` diretamente, já que é `NOLOGIN`).
 
 ```sql
--- RASCUNHO -- nao aplicado
-CREATE ROLE app_backend LOGIN NOSUPERUSER NOBYPASSRLS NOINHERIT
-  PASSWORD NULL; -- senha setada fora desta migration, ver 12.3
+-- SQL aplicado (ver migration de roles)
+CREATE ROLE app_backend LOGIN NOSUPERUSER NOBYPASSRLS NOINHERIT;
+-- sem PASSWORD aqui -- ver 12.3, scripts/provision-roles.sh
+
+CREATE ROLE app_service NOLOGIN NOSUPERUSER NOBYPASSRLS;
+CREATE ROLE app_auth    NOLOGIN NOSUPERUSER NOBYPASSRLS;
+CREATE ROLE app_definer NOLOGIN NOSUPERUSER NOBYPASSRLS;
 
 GRANT app_comprador TO app_backend;
 GRANT app_service   TO app_backend;
--- NAO "GRANT app_definer TO app_backend" -- app_backend nunca precisa SE
--- TORNAR app_definer; so app_comprador (via EXECUTE) chama a funcao que
--- RODA como app_definer internamente (SECURITY DEFINER), sem precisar de
--- SET ROLE nenhum pra isso.
+GRANT app_auth      TO app_backend;
+-- NAO "GRANT app_definer TO app_backend" -- ninguem precisa SET ROLE
+-- app_definer diretamente; fn_breakdown_lote roda como app_definer
+-- internamente (SECURITY DEFINER) quando app_comprador a EXECUTA.
 ```
 
-#### 12.1.1 GRANTs de `app_service` — minha leitura do enunciado, a confirmar
+#### 12.1.1 GRANTs de `app_service` — ajustados, escopo reduzido
 
-O enunciado lista: *"UPDATE de costShare em PedidoLote, Pagamento, Repasse,
-LogAuditoria só INSERT, Avaliacao.sentimentScore"*. Minha leitura (ver
-pergunta 1 em "Decisões em aberto" — não assumi a parte ambígua sem
-marcar):
+Removido desta rodada (decisão aprovada): `Avaliacao.sentimentScore` e
+qualquer acesso a `Lote.status`/`Comprador` — ficam para quando a E4/OE4
+forem implementadas, cada uma trazendo seus próprios `GRANT`s junto com o
+código que os usa (ver princípio abaixo). `Pagamento`/`Repasse` ficaram
+mais restritos: `UPDATE` só nas colunas de estado (`status` +
+*timestamps*), nunca em `valor`/FKs, que ficam imutáveis depois do
+`INSERT`:
 
 ```sql
--- RASCUNHO -- nao aplicado
+-- SQL aplicado
 GRANT UPDATE ("costShare") ON "PedidoLote" TO app_service;
 
-GRANT SELECT, INSERT, UPDATE ON "Pagamento" TO app_service;
-GRANT SELECT, INSERT, UPDATE ON "Repasse"   TO app_service;
+GRANT SELECT, INSERT ON "Pagamento" TO app_service;
+GRANT UPDATE ("status", "updatedAt") ON "Pagamento" TO app_service;
+-- "valor", "pedidoLoteId", "gatewayRef" ficam de fora do UPDATE -- so sao
+-- setados no INSERT, nunca mudam depois.
+
+GRANT SELECT, INSERT ON "Repasse" TO app_service;
+GRANT UPDATE ("status") ON "Repasse" TO app_service;
+-- Repasse nao tem coluna "updatedAt" no schema -- so "status" mesmo.
 
 GRANT INSERT ON "LogAuditoria" TO app_service; -- só INSERT, nunca UPDATE/DELETE/TRUNCATE
-
-GRANT UPDATE ("sentimentScore") ON "Avaliacao" TO app_service;
 ```
 
-Note o que **não** está nesta lista: `UPDATE` em `Lote.status` (precisa
-pra fechar/despachar/entregar/cancelar) e qualquer acesso a `Comprador`
-alem do que `app_comprador` já tem. Isso é proposital — não assumi que
-deveria estar aqui só porque "faria sentido"; ver pergunta 2.
+**Princípio adotado a partir de agora (decisão aprovada, vale para todas
+as etapas futuras)**: cada etapa que precisar de um `GRANT` novo para
+algum role existente traz, no mesmo PR, (a) a lista explícita de "GRANTs
+que esta etapa exige" no próprio corpo do PR, e (b) um teste contra o role
+real provando que o `GRANT` funciona e que nada alem dele foi concedido.
+Não se antecipa `GRANT` "porque vai precisar depois" — isso é exatamente o
+que mantém o modelo de privilégio mínimo honesto ao longo do projeto.
+
+#### 12.1.2 `app_auth` — login, refresh, logout, cadastro
+
+```sql
+-- SQL aplicado
+GRANT SELECT ON "Usuario" TO app_auth;
+GRANT INSERT ON "Usuario" TO app_auth;
+GRANT INSERT ON "Comprador" TO app_auth;
+GRANT INSERT ON "Fornecedor" TO app_auth;
+GRANT INSERT, UPDATE ON "SessaoRefreshToken" TO app_auth;
+GRANT SELECT ON "SessaoRefreshToken" TO app_auth; -- ver nota abaixo
+GRANT INSERT ON "LogAuditoria" TO app_auth;
+```
+
+**Adição ao enunciado, sinalizada**: a lista original não incluía
+`SELECT` em `SessaoRefreshToken`, só `INSERT`/`UPDATE`. Sem `SELECT`, o
+refresh não consegue nem rodar — no Postgres, `UPDATE ... WHERE
+"hashToken" = $1` exige privilégio de leitura sobre as colunas lidas na
+cláusula `WHERE` (aqui, `hashToken`), mesmo que a intenção seja só
+escrever. Adicionei o `SELECT`; é uma necessidade técnica, não uma decisão
+de produto, mas documento a adição porque não estava no pedido literal.
+
+**Quem faz o quê**:
+
+| Operação | Role | Por quê |
+|---|---|---|
+| Cadastro (signup) | `app_auth` | `INSERT` em `Usuario` + `Comprador`/`Fornecedor` — só `app_auth` tem esse `INSERT`; `app_comprador`/`app_service` não têm. |
+| Login | `app_auth` | `SELECT` em `Usuario` (valida `passwordHash`) + `INSERT` em `SessaoRefreshToken` (cria a sessão inicial). |
+| Refresh | `app_auth` | `SELECT`+`UPDATE` em `SessaoRefreshToken` (lê o token apresentado, marca como usado, cria o próximo da família). |
+| Logout | `app_auth` | `UPDATE` em `SessaoRefreshToken` (revoga). |
+| Tudo que não é auth (lotes, pedidos, breakdown, avaliações, perfil) | `app_comprador` | inalterado desde o E1. |
+| Fechamento de lote, pagamento, repasse, auditoria | `app_service` | inalterado desde 12.1.1. |
+
+**Como o interceptor escolhe o role**: pela ROTA, não por heurística em
+runtime — as rotas de `IdentidadeModule` que são especificamente
+`/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/cadastro` (ou nome
+equivalente) usam `app_auth`; as demais rotas autenticadas como comprador
+usam `app_comprador` + `app.comprador_id`; jobs/rotas administrativas
+(fechar lote, etc.) usam `app_service`. Na prática isso é um decorator ou
+metadata no controller (ex.: `@Role('app_auth')` em cada método do
+`AuthController`), lido pelo interceptor antes de abrir a transação — o
+desenho exato do decorator é implementação da E2, não desta seção.
+
+`Usuario` precisa de `INSERT` por `app_auth` em `Comprador`/`Fornecedor`
+também — e `Comprador` tem `FORCE ROW LEVEL SECURITY` desde a migration
+original, que **nunca teve uma política de `INSERT`** (o comentário da
+própria migration original já apontava isso como pendência: "Cadastro
+(INSERT) fica fora desta política"). Esta etapa resolve essa pendência
+com uma política nova, escopada a `app_auth`:
+
+```sql
+-- SQL aplicado
+CREATE POLICY comprador_insert_cadastro ON "Comprador"
+  FOR INSERT TO app_auth WITH CHECK (true);
+```
+
+`Fornecedor`, `Usuario` e `SessaoRefreshToken` nunca tiveram RLS
+habilitado — os `GRANT`s acima bastam, sem política adicional.
 
 ### 12.2 RLS explícito para `app_service`/`app_definer`, não `BYPASSRLS`
 
 `CREATE ROLE ... BYPASSRLS` exige que quem está criando o role seja
 superuser — e, mais importante, em Postgres gerenciado (Supabase incluso)
 o role de conexão que você recebe nem sempre tem (ou tem permissão de
-conceder) `BYPASSRLS` livremente. Em vez disso: como `Comprador`, `Lote`,
-`PedidoLote`, `Avaliacao` têm `FORCE ROW LEVEL SECURITY` (ativado desde a
-migration de RLS original), **o dono da tabela também está sujeito às
+conceder) `BYPASSRLS` livremente. Em vez disso: como `PedidoLote` tem
+`FORCE ROW LEVEL SECURITY`, **o dono da tabela também está sujeito às
 políticas** a menos que seja superuser — então `app_service`/`app_definer`
-precisam de políticas próprias (`TO app_service USING (true)`), não de
-bypass:
+precisam de políticas próprias (`TO <role> USING (true)`), não de bypass:
 
 ```sql
--- RASCUNHO -- nao aplicado
+-- SQL aplicado
+CREATE POLICY app_service_update_costshare ON "PedidoLote"
+  FOR UPDATE TO app_service USING (true) WITH CHECK (true);
 
--- app_service: visao/escrita total nas tabelas que ja tem FORCE RLS e que
--- ele precisa tocar para fechar lote/gerir pagamento.
-CREATE POLICY app_service_full ON "PedidoLote"
-  FOR ALL TO app_service USING (true) WITH CHECK (true);
-
-CREATE POLICY app_service_full ON "Lote"
-  FOR ALL TO app_service USING (true) WITH CHECK (true);
--- (Comprador/Avaliacao: só se app_service vier a precisar -- ver pergunta 2)
-
--- app_definer: só leitura, só o que fn_breakdown_lote precisa.
 CREATE POLICY app_definer_select ON "PedidoLote"
   FOR SELECT TO app_definer USING (true);
 ```
 
-**⚠️ Validar no deploy**: isto assume que o provider (Supabase) permite
-`CREATE POLICY ... TO <role>` livremente para o role de conexão usado nas
-migrations (`DIRECT_URL`, seção 12.3) — o que é esperado (políticas RLS
-não exigem superuser, diferente de `BYPASSRLS`), mas não testei contra uma
-instância Supabase real, só contra o Postgres local de dev. Se o role de
-migração do Supabase tiver alguma restrição adicional para `CREATE POLICY`
-ou `GRANT ... TO <role recem-criado>`, isso só aparece no primeiro deploy
-real.
+(`Pagamento`/`Repasse` não têm `FORCE ROW LEVEL SECURITY` — nunca foi
+habilitado nelas — então os `GRANT`s de 12.1.1 bastam, sem política. `Lote`
+não recebeu política de `app_service` nesta rodada porque `app_service`
+não recebeu `GRANT` em `Lote` nesta rodada — ver 12.1.1.)
+
+**⚠️ Validar no deploy — passo explícito, não só nota**: antes de apontar
+o backend para o Supabase de produção, rodar manualmente contra uma
+instância Supabase de teste, nesta ordem: (1) `CREATE ROLE ... NOLOGIN`
+simples, (2) `CREATE POLICY ... TO <role recem-criado>`, (3) `GRANT ...
+TO <role>` vindo do role de migração do Supabase (que não é o `postgres`
+raiz do cluster, é um role de owner do projeto). Se qualquer um desses
+três falhar por falta de privilégio, é um achado que precisa voltar pra
+este documento antes de prosseguir — não é algo pra descobrir no primeiro
+deploy real sem plano B.
 
 ### 12.3 Duas URLs no Prisma — `DATABASE_URL` (pooler, `app_backend`) e `DIRECT_URL` (schema owner)
 
@@ -1052,15 +1127,30 @@ DATABASE_URL="postgresql://app_backend:${APP_BACKEND_PASSWORD}@<pooler-host>:654
 DIRECT_URL="postgresql://postgres:${POSTGRES_PASSWORD}@<direct-host>:5432/tcc_db?schema=public"
 ```
 
-**A senha de `app_backend` não entra em migration nenhuma** — migrations
-são commitadas no git, e uma migration com `ALTER ROLE app_backend
-PASSWORD '...'` com a senha literal seria um segredo no histórico do git
-pra sempre (mesmo removendo depois, fica no histórico). A migration que
-**cria** o role (`CREATE ROLE app_backend LOGIN ... PASSWORD NULL`, sem
-senha) pode ir pro git normalmente — é só a definição da senha que fica de
-fora, via `ALTER ROLE app_backend PASSWORD '...'` rodado manualmente (ou
-por um script de provisionamento mantido fora do repositório, ou pelo
-mecanismo de secrets do provider de hosting). Ver pergunta 5.
+**A senha de `app_backend` não entra em migration nenhuma** (decisão
+aprovada): a migration só cria o role sem senha (`CREATE ROLE app_backend
+LOGIN ...`, sem `PASSWORD`). A senha é definida por
+`apps/backend/scripts/provision-roles.sh`, **versionado no git** (o
+script em si não é segredo — só o valor que ele lê em runtime é):
+
+```bash
+#!/usr/bin/env bash
+# apps/backend/scripts/provision-roles.sh
+set -euo pipefail
+
+: "${APP_BACKEND_PASSWORD:?defina APP_BACKEND_PASSWORD antes de rodar}"
+: "${DIRECT_URL:?defina DIRECT_URL (conexao com privilegio de ALTER ROLE)}"
+
+psql "$DIRECT_URL" -v pw="$APP_BACKEND_PASSWORD" -c "ALTER ROLE app_backend PASSWORD :'pw';"
+```
+
+`-v pw="$APP_BACKEND_PASSWORD"` + `:'pw'` é a sintaxe de variável do
+`psql` com quoting seguro de literal de string — a senha nunca é
+interpolada diretamente na string SQL pelo shell (o que seria uma injeção
+de SQL esperando para acontecer se a senha tivesse um caractere `'`
+dentro), o `psql` faz o escaping. `APP_BACKEND_PASSWORD` nunca é
+commitado — vem do ambiente (`.env` local, ou secret do provider de
+hosting em produção).
 
 ### 12.4 O que o interceptor faz por requisição, e o que acontece se esquecer
 
@@ -1087,53 +1177,52 @@ seção existe para garantir — compare com o estado atual (E1), onde
 esquecer o equivalente hoje significaria rodar como `postgres` e nunca dar
 erro nenhum, só vazar tudo silenciosamente.
 
-### 12.5 Testes novos (descritos — não escritos nesta etapa)
+### 12.5 Testes novos — escritos em `apps/backend/prisma/tests/rls-isolation.sql`
 
-1. **Conectado como `app_backend`, sem `SET ROLE`**: `SELECT * FROM
-   "PedidoLote"` → `permission denied for table PedidoLote`. Precisa de
-   uma conexão psql autenticada DE VERDADE como `app_backend` (não
-   `postgres` fazendo `SET LOCAL ROLE app_backend` — o ponto é testar o
-   que o role tem por padrão, sem qualquer `SET ROLE`).
-2. **O mesmo `app_backend`, depois de `SET LOCAL ROLE app_comprador` +
-   `SET LOCAL app.comprador_id`**: RLS volta a valer normalmente — reusa
-   os casos já existentes em `rls-isolation.sql`, só trocando a conexão de
-   base de `postgres` para `app_backend` nessa parte.
-3. **`app_service` preenche `costShare`** (`UPDATE "PedidoLote" SET
-   "costShare" = ... WHERE id = ...` como `app_service`) com sucesso, **mas
-   não consegue `UPDATE`/`DELETE` em `LogAuditoria`** (só tem `INSERT`) —
-   reafirma que nem o role "privilegiado" tem acesso à trilha de
-   auditoria, defesa em profundidade mesmo entre roles de confiança
-   diferentes.
-4. **`app_definer` é dono de `fn_breakdown_lote`, e a função funciona
-   quando chamada por `app_comprador`** — chamar a função como
-   `app_comprador` (que só tem `EXECUTE`, não `SELECT` direto suficiente
-   sozinho pra montar o breakdown agregado de outros participantes) e
-   confirmar que o resultado é idêntico ao que já é testado em
-   `rls-isolation.sql` caso 4 — a diferença é que agora a função roda como
-   `app_definer` (role dedicado, só `SELECT` em `PedidoLote`), não como
-   `postgres` (superuser).
+Casos 9-14 (ver arquivo para o SQL exato e a saída real):
 
-### 12.6 Comando para rodar os testes de isolamento hoje, e script `npm run test:rls`
+1. **`app_backend` sem `SET ROLE`** → `SELECT` em `PedidoLote` dá
+   `permission denied`.
+2. **`app_backend` depois de `SET LOCAL ROLE app_comprador` +
+   `app.comprador_id`** → RLS volta a valer normalmente.
+3. **`app_service` preenche `costShare`** com sucesso, mas **não consegue
+   `UPDATE`/`DELETE` em `LogAuditoria`**.
+4. **`app_definer` é dono de `fn_breakdown_lote`** (confirmado via
+   catálogo) **e a função funciona quando chamada por `app_comprador`**.
+5. **`app_auth` lê `Usuario` e NÃO lê `PedidoLote`/`Pagamento`**.
+6. **`app_comprador` continua sem acesso** às 5 tabelas protegidas
+   (`Usuario`, `SessaoRefreshToken`, `LogAuditoria`, `Pagamento`,
+   `Repasse`) — reconfirmado depois de todos os `GRANT`s novos desta
+   etapa, não só assumido que continua valendo.
 
-Comando exato (o mesmo de sempre, nada mudou nele ainda):
+Metodologia: todos os casos acima usam `SET LOCAL ROLE <role>` a partir da
+mesma conexão `postgres`-autenticada do arquivo de teste — isso é
+equivalente, para fins de checagem de privilégio, a uma conexão real
+autenticada como aquele role (o Postgres avalia privilégios pelo role
+EFETIVO no momento da query, não por como a sessão chegou a ser aquele
+role). Não foi necessário abrir uma segunda conexão `psql -U app_backend`
+de verdade.
+
+### 12.6 `npm run test:rls`
+
+Comando exato (inalterado):
 
 ```bash
 docker exec -i tcc_postgres psql -U postgres -d tcc_db -v ON_ERROR_STOP=1 \
   < apps/backend/prisma/tests/rls-isolation.sql
 ```
 
-**Problema a resolver pro `npm run test:rls` ser útil em CI**: desde a
-extensão do arquivo (revisão do PR #1), os casos usam `RAISE NOTICE
-'PASS/FAIL'` em vez de `RAISE EXCEPTION` — isso foi deliberado, pra rodar
-todos os casos numa execução só em vez de abortar no primeiro problema,
-mas tem uma consequência: **o `psql` sai com código 0 mesmo se algum caso
-imprimir `FAIL`.** `ON_ERROR_STOP=1` só pega erro de SQL de verdade (ex.:
-sintaxe, violação não esperada), não um `FAIL` impresso deliberadamente
-pelo próprio teste. O script precisa capturar a saída e procurar por
-`FAIL` explicitamente:
+O arquivo foi reestruturado (ver `test(E1): reestrutura rls-isolation.sql`
+no histórico do git): cada caso grava um resultado numa tabela temporária
+em vez de só `RAISE NOTICE`, e um `DO` final lê essa tabela e faz `RAISE
+EXCEPTION` se existir qualquer linha `FAIL` — combinado com `-v
+ON_ERROR_STOP=1`, isso faz o `psql` sair com código `!= 0` sempre que
+houver uma falha, sem precisar de `grep` externo (a ideia do `grep`, na
+versão anterior desta seção, ficou obsoleta — o `RAISE EXCEPTION` resolve
+isso dentro do próprio SQL).
 
 ```json
-// package.json -- RASCUNHO, script ainda nao criado
+// apps/backend/package.json
 "scripts": {
   "test:rls": "bash scripts/test-rls.sh"
 }
@@ -1141,54 +1230,41 @@ pelo próprio teste. O script precisa capturar a saída e procurar por
 
 ```bash
 #!/usr/bin/env bash
-# scripts/test-rls.sh -- RASCUNHO, nao escrito ainda
+# apps/backend/scripts/test-rls.sh
 set -euo pipefail
+cd "$(dirname "$0")/.."
 
-SAIDA=$(docker exec -i tcc_postgres psql -U postgres -d tcc_db -v ON_ERROR_STOP=1 \
-  < apps/backend/prisma/tests/rls-isolation.sql 2>&1)
-
-echo "$SAIDA"
-
-if echo "$SAIDA" | grep -q 'FAIL'; then
-  echo "FALHOU: pelo menos um caso de rls-isolation.sql imprimiu FAIL." >&2
-  exit 1
-fi
+docker exec -i tcc_postgres psql -U postgres -d tcc_db -v ON_ERROR_STOP=1 \
+  < prisma/tests/rls-isolation.sql
 ```
 
-Quando os testes da seção 12.5 existirem como arquivo (`rls-roles.sql` ou
-nome a definir), o script cresce para rodar os dois arquivos e falhar se
-`FAIL` aparecer em qualquer um.
+Prova de que o mecanismo de código de saída funciona nos dois sentidos
+(com uma falha introduzida de propósito e depois desfeita, sem tocar no
+arquivo versionado) está no relato da sessão que implementou esta etapa —
+não repetido aqui para não duplicar.
 
-### Decisões em aberto desta seção (uma por vez, nenhuma assumida)
+### Decisões aprovadas desta seção
 
-1. **GRANTs de `app_service` em `Pagamento`/`Repasse`** (12.1.1): propus
-   `SELECT, INSERT, UPDATE` nos dois, porque o enunciado não especificou o
-   verbo exato para esses dois (só disse os nomes das tabelas na lista,
-   diferente de "UPDATE de costShare" e "só INSERT" que são explícitos).
-   Está certo, ou você quer algo mais restrito (ex.: sem `UPDATE` em
-   `Pagamento`, já que talvez o gateway fake escreva via outro caminho)?
-2. **`app_service` e `Lote.status`/`Comprador`**: o enunciado não lista
-   `UPDATE` em `Lote` nem nenhum acesso a `Comprador` para `app_service`,
-   mas fechar/despachar/entregar/cancelar um lote precisa mudar
-   `Lote.status`. Isso fica de fora de propósito (entra só na E4, quando
-   os endpoints existirem) ou faltou no enunciado e deveria entrar já
-   nesta proposta?
-3. **Política de `app_service` em `Comprador`/`Avaliacao`**: propus
-   políticas `FOR ALL USING (true)` só em `PedidoLote` e `Lote` (o mínimo
-   pro que foi listado). `app_service` precisa de visão total em
-   `Comprador` e `Avaliacao` também, ou isso também fica pra quando os
-   endpoints que precisarem disso existirem?
-4. **Senha de `app_backend`**: o enunciado diz "variável de ambiente ou
-   script de provisionamento fora do git" como as duas opções aceitáveis
-   — qual das duas quer que eu detalhe como o caminho real (ex.: um
-   `scripts/provision-db.sh` versionado que LÊ a senha de uma env var e
-   roda o `ALTER ROLE`, vs. confiar inteiramente na gestão de secrets do
-   Supabase sem nenhum script no repositório)?
-5. **Porta/parâmetros do pooler**: usei `6543` e `?pgbouncer=true` como
-   placeholder (padrão comum do Supabase/PgBouncer), mas isto não foi
-   validado contra uma instância real — ok manter como placeholder
-   marcado "validar no deploy" junto com o ponto de `BYPASSRLS` da seção
-   12.2, ou você já tem os valores reais do Supabase pra eu usar agora?
+1. **GRANTs de `app_service` em `Pagamento`/`Repasse`**: `SELECT, INSERT`
+   completo + `UPDATE` só nas colunas de estado (`status` +
+   *timestamps*), sem `DELETE` — `valor`/FKs imutáveis após o `INSERT`.
+2. **`app_service` e `Lote.status`/`Comprador`**: ficam para a E4, com
+   `GRANT` e teste chegando no mesmo PR que os endpoints que precisarem
+   deles. `Avaliacao.sentimentScore`/agregados ficam no pacote do OE4,
+   mesma lógica.
+3. **Princípio adotado**: cada etapa futura traz sua própria lista de
+   "GRANTs que esta etapa exige" + teste contra o role real — não se
+   antecipa `GRANT` por achar que "vai precisar depois".
+4. **Senha de `app_backend`**: `apps/backend/scripts/provision-roles.sh`,
+   versionado, lendo `APP_BACKEND_PASSWORD` do ambiente via `psql -v` +
+   `:'pw'` — nunca interpolação de shell direta, nunca em migration.
+5. **Pooler do Supabase**: mantido como placeholder (`6543`,
+   `?pgbouncer=true`) com passo de validação antecipada explícito (12.2)
+   — a confirmar contra uma instância Supabase real antes do primeiro
+   deploy.
+6. **`app_auth` novo**: login/refresh/logout/cadastro passam a rodar
+   nesse role, não em `app_comprador`/`app_service` — ver 12.1.2 para o
+   roteamento exato por rota.
 
 ---
 
