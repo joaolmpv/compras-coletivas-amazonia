@@ -129,6 +129,11 @@ Cole isto como primeira tarefa:
 Isso evita que ele avance rápido demais sem você validar as decisões de schema, que
 são a base de tudo.
 
+### 7.1 Política de Git (regra permanente)
+
+Nunca faça push, abra PR ou mergeie sem pedido explícito; commits locais por
+padrão.
+
 ---
 
 ## 8. ⚠️ O que precisa mudar no texto do TCC — leia antes de começar
