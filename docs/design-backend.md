@@ -1141,16 +1141,21 @@ set -euo pipefail
 : "${APP_BACKEND_PASSWORD:?defina APP_BACKEND_PASSWORD antes de rodar}"
 : "${DIRECT_URL:?defina DIRECT_URL (conexao com privilegio de ALTER ROLE)}"
 
-psql "$DIRECT_URL" -v pw="$APP_BACKEND_PASSWORD" -c "ALTER ROLE app_backend PASSWORD :'pw';"
+psql "$DIRECT_URL" -v pw="$APP_BACKEND_PASSWORD" <<'SQL'
+ALTER ROLE app_backend PASSWORD :'pw';
+SQL
 ```
 
 `-v pw="$APP_BACKEND_PASSWORD"` + `:'pw'` é a sintaxe de variável do
 `psql` com quoting seguro de literal de string — a senha nunca é
 interpolada diretamente na string SQL pelo shell (o que seria uma injeção
 de SQL esperando para acontecer se a senha tivesse um caractere `'`
-dentro), o `psql` faz o escaping. `APP_BACKEND_PASSWORD` nunca é
-commitado — vem do ambiente (`.env` local, ou secret do provider de
-hosting em produção).
+dentro), o `psql` faz o escaping. **Nota de implementação**: a
+substituição de `:'pw'` só funciona com o SQL entrando via stdin/`-f`, não
+via `-c` (confirmado empiricamente — `-c` dá erro de sintaxe no `:'pw'`
+literal nesta versão do `psql`) — por isso o heredoc, não `-c`.
+`APP_BACKEND_PASSWORD` nunca é commitado — vem do ambiente (`.env` local,
+ou secret do provider de hosting em produção).
 
 ### 12.4 O que o interceptor faz por requisição, e o que acontece se esquecer
 
