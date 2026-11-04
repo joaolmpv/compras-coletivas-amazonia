@@ -1,3 +1,7 @@
+> **Leia `DEVELOPMENT.md` antes de qualquer tarefa** — é o roteiro de etapas,
+> critérios de aceite e regras do projeto. Este arquivo (`CLAUDE.md`) é o
+> briefing geral; `DEVELOPMENT.md` é o estado real e o que vem a seguir.
+
 # CLAUDE.md — Briefing de Desenvolvimento da Plataforma de Compras Coletivas
 
 Este documento é o ponto de partida para o Claude Code. Cole-o na raiz do repositório
@@ -63,23 +67,44 @@ Copie estes critérios literalmente. São o que a banca vai cobrar.
 
 ---
 
-## 4. Estrutura de repositório sugerida (monorepo)
+## 4. Estrutura real do repositório
+
+A estrutura abaixo é a que **existe de fato** (substitui a proposta original de
+`apps/web`/`apps/api`/`packages/database` — esses nomes nunca existiram no
+projeto real; o scaffold já veio como `apps/frontend`/`apps/backend`, e o
+schema Prisma mora direto em `apps/backend/prisma`, sem pacote `packages/`
+separado — ver `ESTRUTURA.md` para a justificativa).
 
 ```
 /apps
-  /web          → Next.js (OE3)
-  /api          → NestJS (OE2, orquestração)
+  /frontend     → Next.js (OE3)
+  /backend      → NestJS + Prisma (OE2, orquestração) — schema em apps/backend/prisma
 /services
-  /optimizer    → FastAPI + DEAP (OE1)
-/packages
-  /database     → schema Prisma compartilhado
-  /shared-types → tipos TS compartilhados entre web e api
+  /optimizer    → Python + DEAP + scikit-learn (OE1)
 docker-compose.yml
 CLAUDE.md
+DEVELOPMENT.md  → roteiro de etapas (ler antes de qualquer tarefa)
 ```
 
-Peça ao Claude Code para criar essa estrutura primeiro, com Docker Compose subindo
-Postgres + os 3 serviços localmente antes de escrever qualquer lógica de negócio.
+`packages/shared-types` ainda não existe — é planejado para quando o
+frontend (F1) precisar do contrato de tipos do backend, não antes.
+
+### Ambiente local
+
+- **Banco**: container `tcc_postgres`, porta **5433**, banco `tcc_db`. O
+  `docker-compose.yml` do repositório **não é necessariamente** o que está
+  rodando — confirme com `docker ps` antes de assumir, e não rode
+  `docker compose up` sem alinhar isso (risco de conflito na porta 5433).
+- **Schema**: as 7 entidades centrais do OE2 já estão em português
+  (`Comprador`, `Fornecedor`, `Produto`, `Lote`, `PedidoLote`,
+  `HubLogistico`, `Avaliacao`), mais 5 de suporte (`Usuario`,
+  `SessaoRefreshToken`, `Pagamento`, `Repasse`, `LogAuditoria`).
+- **RLS**: aplicado e testado (`npm run test:rls` em `apps/backend`, 38
+  casos). Modelo de roles: `app_backend` (único usado em runtime,
+  `NOINHERIT`), `app_comprador`, `app_service`, `app_auth`, `app_definer`
+  — detalhes em `docs/design-backend.md` seção 12.
+- **E1 (migrations + RLS + roles) está concluída e mergeada em `dev`.**
+  Próxima etapa: E2 (identidade/autenticação) — ver `DEVELOPMENT.md` seção 4.
 
 ---
 
