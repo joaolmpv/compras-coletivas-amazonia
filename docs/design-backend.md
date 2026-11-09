@@ -1070,13 +1070,22 @@ habilitado — os `GRANT`s acima bastam, sem política adicional.
 
 ### 12.2 RLS explícito para `app_service`/`app_definer`, não `BYPASSRLS`
 
-`CREATE ROLE ... BYPASSRLS` exige que quem está criando o role seja
-superuser — e, mais importante, em Postgres gerenciado (Supabase incluso)
-o role de conexão que você recebe nem sempre tem (ou tem permissão de
-conceder) `BYPASSRLS` livremente. Em vez disso: como `PedidoLote` tem
-`FORCE ROW LEVEL SECURITY`, **o dono da tabela também está sujeito às
-políticas** a menos que seja superuser — então `app_service`/`app_definer`
-precisam de políticas próprias (`TO <role> USING (true)`), não de bypass:
+**Correção após validação real (29/10/2026 — ver abaixo)**: a frase
+original aqui dizia que `CREATE ROLE ... BYPASSRLS` "exige que quem está
+criando o role seja superuser" e que o role de conexão do Supabase "nem
+sempre tem essa permissão livremente". Isso estava impreciso — a regra
+real do Postgres é que o role CRIADOR precisa ele mesmo **ter**
+`BYPASSRLS` (não precisa ser superuser completo), e no Supabase o role
+`postgres` do projeto **tem** `BYPASSRLS=true` por padrão (ver achados
+abaixo) — `CREATE ROLE ... BYPASSRLS` funciona lá. A escolha de usar
+políticas explícitas em vez de `BYPASSRLS` **continua sendo a adotada**,
+mas agora por uma razão diferente da que foi escrita originalmente:
+portabilidade de design (não depender de um atributo de role específico
+do ambiente) e defesa em profundidade, não porque o Supabase bloquearia
+`BYPASSRLS` — ele não bloqueia. Como `PedidoLote` tem `FORCE ROW LEVEL
+SECURITY`, o dono da tabela também está sujeito às políticas a menos que
+seja superuser ou tenha `BYPASSRLS` — então `app_service`/`app_definer`
+recebem políticas próprias (`TO <role> USING (true)`):
 
 ```sql
 -- SQL aplicado (corrigido depois da v1 -- ver migration
@@ -1097,56 +1106,57 @@ habilitado nelas — então os `GRANT`s de 12.1.1 bastam, sem política. `Lote`
 não recebeu política de `app_service` nesta rodada porque `app_service`
 não recebeu `GRANT` em `Lote` nesta rodada — ver 12.1.1.)
 
-**⚠️ Validar no deploy — passo explícito, não só nota**: antes de apontar
-o backend para o Supabase de produção, rodar manualmente contra uma
-instância Supabase de teste, nesta ordem: (1) `CREATE ROLE ... NOLOGIN`
-simples, (2) `CREATE POLICY ... TO <role recem-criado>`, (3) `GRANT ...
-TO <role>` vindo do role de migração do Supabase (que não é o `postgres`
-raiz do cluster, é um role de owner do projeto). Se qualquer um desses
-três falhar por falta de privilégio, é um achado que precisa voltar pra
-este documento antes de prosseguir — não é algo pra descobrir no primeiro
-deploy real sem plano B.
+**✅ Validado em 29/10/2026, num projeto Supabase de teste, descartável
+depois da validação — não é o projeto de produção, e estes achados não
+foram re-confirmados contra o projeto real.** O passo de validação
+proposto na versão anterior deste documento (criar role, criar política,
+conceder privilégio, nessa ordem, verificando se cada um falha por
+privilégio insuficiente) foi executado. Resultado, item por item:
 
-**Achados específicos do Supabase, a aplicar quando esse passo for
-executado** (ainda não validados contra uma instância real — registrados
-aqui como requisito conhecido, não como algo já testado):
-
-- **`ALTER FUNCTION fn_breakdown_lote OWNER TO app_definer` exige que
-  quem roda a migration seja MEMBRO de `app_definer`, a menos que seja
-  superuser.** Localmente isso não aparece porque `postgres` (quem roda
-  as migrations aqui) é superuser de verdade, e superuser pode transferir
-  ownership pra qualquer role sem precisar ser membro dele. No Supabase, o
-  `postgres` do projeto **não é superuser do cluster** (é um role
-  administrativo do projeto, mais restrito) — então a mesma migration
-  precisa, antes do `ALTER FUNCTION`, de `GRANT app_definer TO postgres`
-  (senão a troca de dono falha por privilégio insuficiente). Pela mesma
-  razão, `app_definer` provavelmente precisa de `GRANT CREATE ON SCHEMA
-  public TO app_definer` nesse ambiente — o modelo de permissão do
-  Supabase trata a posse de objetos dentro de `public` como dependente de
-  privilégio de `CREATE` no schema de um jeito que não aparece com um
-  superuser local. **Nenhuma das duas linhas entra nas migrations
-  locais** (rodam sempre como `postgres` superuser aqui, e adicionar
-  `GRANT CREATE ON SCHEMA public` sem necessidade local seria privilégio
-  não usado, não "inofensivo de mais") — ficam numa migration ou script
-  **condicional ao ambiente de deploy**, a decidir quando o passo de
-  validação acima rodar de verdade.
-- **Revogar os `GRANT`s padrão do Supabase em `anon`/`authenticated`/
-  `service_role`** (os três roles que o Supabase cria por padrão para o
-  PostgREST embutido, que por padrão ganham acesso amplo ao schema
-  `public`) **não entra nas migrations do Prisma** — é hardening
-  específico daquele provedor, não parte do schema portável da aplicação
-  (rodar essa revogação contra o Postgres local de dev tentaria revogar
-  de roles que nem existem aqui, exigindo guardas `IF EXISTS` só pra um
-  cenário que não é o de dev). Fica em
-  `apps/backend/scripts/provision-roles.sh` (ou um script de deploy
-  dedicado próximo a ele) — mesma categoria de "provisionamento fora da
-  migration" que já vale pra senha do `app_backend` (seção 12.3).
-- **Testar a conectividade com o pooler do Supabase a partir de um
-  container Docker local precisa de `--network host`** (não o bridge
-  padrão) — sem isso, o container não resolve/alcança o pooler da mesma
-  forma que o processo do backend vai alcançar em produção, e um teste de
-  conectividade que "passa" com rede em bridge pode não significar nada
-  sobre o ambiente real.
+- **O role `postgres` do projeto Supabase**: `rolsuper = false` (confirma
+  a suposição original — não é superuser do cluster), mas
+  `rolcreaterole = true` **e** `rolbypassrls = true`. A regra real do
+  Postgres para `CREATE ROLE ... BYPASSRLS` é que o CRIADOR precise ele
+  mesmo ter `BYPASSRLS` — não precisa ser superuser completo — e por isso
+  **`CREATE ROLE ... BYPASSRLS` funcionou** no Supabase. Não impede nada
+  do nosso design (continuamos com políticas explícitas, ver nota em
+  12.2 acima), só corrige a suposição de que o Supabase bloquearia isso.
+- **`ALTER FUNCTION fn_breakdown_lote OWNER TO app_definer` funcionou**,
+  mas só depois de aplicar, antes, `GRANT app_definer TO postgres` e
+  `GRANT CREATE ON SCHEMA public TO app_definer` — exatamente a hipótese
+  da versão anterior deste documento, agora confirmada, não mais
+  especulativa. **Nenhuma das duas linhas entra nas migrations locais**
+  (o `postgres` local é superuser de verdade e não precisa disso) — ficam
+  condicionadas ao ambiente de deploy, em `apps/backend/scripts/provision-roles.sh`
+  ou script de deploy equivalente.
+- **`anon`, `authenticated` e `service_role` recebem todos os privilégios
+  por padrão em tabelas e funções do schema `public`** — confirmado
+  consultando `pg_default_acl` diretamente, não só supondo pelo
+  comportamento. **`REVOKE ... FROM PUBLIC` não os remove** — esses três
+  roles têm entradas próprias em `pg_default_acl` (herdadas de
+  `ALTER DEFAULT PRIVILEGES` que o Supabase já roda no provisionamento do
+  projeto), não vêm através de `PUBLIC`, então revogar de `PUBLIC` é
+  inofensivo mas inútil contra eles. A revogação certa precisa de
+  `REVOKE` nominal nos três roles **e** `ALTER DEFAULT PRIVILEGES ...
+  REVOKE` (para as próximas tabelas/funções que forem criadas, não só as
+  existentes no momento da revogação) — isso **não entra nas migrations
+  do Prisma** (são roles que não existem no Postgres local de dev, exigiria
+  guardas `IF EXISTS` só para um cenário que não é o de dev); fica em
+  `apps/backend/scripts/provision-roles.sh`.
+- **Pelo pooler em modo transaction (porta 6543)**: `SELECT` sem `SET
+  ROLE` → `permission denied` (mesmo comportamento do Postgres direto).
+  Com `SET LOCAL ROLE` + `SET LOCAL app.comprador_id` → RLS filtra
+  normalmente, e a função `SECURITY DEFINER` (`fn_breakdown_lote`)
+  funciona. **Depois do `COMMIT`, a identidade volta vazia e não vaza
+  para a próxima transação** que reusar a mesma conexão física do pool —
+  esta é a propriedade mais importante validada aqui: confirma que
+  `SET LOCAL` (não `SET` simples) é de fato seguro sob pooling em modo
+  transaction, não só uma suposição lida na documentação do Postgres (ver
+  seção 10.2).
+- **Testar a conectividade com o pooler a partir de um container Docker
+  local exigiu `--network host`** (não o bridge padrão) — sem isso, o
+  container não alcançava o pooler da mesma forma que o processo do
+  backend alcançaria em produção.
 
 ### 12.3 Duas URLs no Prisma — `DATABASE_URL` (pooler, `app_backend`) e `DIRECT_URL` (schema owner)
 
