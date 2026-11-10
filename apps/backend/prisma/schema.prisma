@@ -61,7 +61,8 @@ model Usuario {
 }
 
 // Sem RLS -- estado de sessao, nao dado de negocio do comprador. So acessada
-// pelo IdentidadeModule/app_service, nunca por app_comprador diretamente.
+// pelo IdentidadeModule/app_auth (SELECT/INSERT/UPDATE/DELETE -- E1/E2),
+// nunca por app_comprador diretamente.
 model SessaoRefreshToken {
   id        String    @id @default(cuid())
   usuarioId String
