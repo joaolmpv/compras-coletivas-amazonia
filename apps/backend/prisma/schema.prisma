@@ -12,8 +12,12 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  // Runtime: app_backend (NOINHERIT, sem GRANT direto em tabela alguma --
+  // ver design-backend.md secao 12). Migrations usam DIRECT_URL (dono do
+  // schema), nao esta.
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 enum PapelUsuario {
