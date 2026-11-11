@@ -3,7 +3,7 @@ import { SetMetadata } from '@nestjs/common';
 export const DB_ROLE_KEY = 'dbRole';
 
 /** Roles de banco que o RlsInterceptor sabe assumir via SET LOCAL ROLE. */
-export type DbRole = 'app_auth' | 'app_comprador' | 'app_service';
+export type DbRole = 'app_auth' | 'app_comprador' | 'app_service' | 'app_fornecedor';
 
 /**
  * Marca um controller/rota com o role de banco que a requisicao deve

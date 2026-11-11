@@ -13,7 +13,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { DbContextService } from './db-context.service';
 import { DB_ROLE_KEY, DbRole } from './db-role.decorator';
 
-const DB_ROLES: readonly DbRole[] = ['app_auth', 'app_comprador', 'app_service'];
+const DB_ROLES: readonly DbRole[] = ['app_auth', 'app_comprador', 'app_service', 'app_fornecedor'];
 
 /**
  * Abre UMA transacao por requisicao, faz SET LOCAL ROLE (+ SET LOCAL
@@ -49,8 +49,9 @@ export class RlsInterceptor implements NestInterceptor {
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     const role = this.resolveRole(context);
     const request = context.switchToHttp().getRequest();
-    const compradorId =
-      role === 'app_comprador' ? (request.principal?.perfilId ?? null) : null;
+    const perfilId = request.principal?.perfilId ?? null;
+    const compradorId = role === 'app_comprador' ? perfilId : null;
+    const fornecedorId = role === 'app_fornecedor' ? perfilId : null;
 
     return from(
       this.prisma.$transaction(async (tx) => {
@@ -58,6 +59,9 @@ export class RlsInterceptor implements NestInterceptor {
         await tx.$executeRawUnsafe(`SET LOCAL ROLE ${role}`);
         if (compradorId) {
           await tx.$executeRaw`SELECT set_config('app.comprador_id', ${compradorId}, true)`;
+        }
+        if (fornecedorId) {
+          await tx.$executeRaw`SELECT set_config('app.fornecedor_id', ${fornecedorId}, true)`;
         }
         return firstValueFrom(next.handle());
       }),

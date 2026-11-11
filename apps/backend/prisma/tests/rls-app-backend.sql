@@ -40,21 +40,23 @@ $$;
 
 DO $$
 DECLARE
-  membro_comprador boolean;
-  membro_service   boolean;
-  membro_auth      boolean;
-  membro_definer   boolean;
+  membro_comprador  boolean;
+  membro_service    boolean;
+  membro_auth       boolean;
+  membro_fornecedor boolean;
+  membro_definer    boolean;
 BEGIN
-  membro_comprador := pg_has_role('app_backend', 'app_comprador', 'MEMBER');
-  membro_service   := pg_has_role('app_backend', 'app_service', 'MEMBER');
-  membro_auth      := pg_has_role('app_backend', 'app_auth', 'MEMBER');
-  membro_definer   := pg_has_role('app_backend', 'app_definer', 'MEMBER');
+  membro_comprador  := pg_has_role('app_backend', 'app_comprador', 'MEMBER');
+  membro_service    := pg_has_role('app_backend', 'app_service', 'MEMBER');
+  membro_auth       := pg_has_role('app_backend', 'app_auth', 'MEMBER');
+  membro_fornecedor := pg_has_role('app_backend', 'app_fornecedor', 'MEMBER');
+  membro_definer    := pg_has_role('app_backend', 'app_definer', 'MEMBER');
 
-  IF membro_comprador AND membro_service AND membro_auth AND NOT membro_definer THEN
-    RAISE NOTICE 'PASS -- app_backend e membro de app_comprador/app_service/app_auth, e NAO de app_definer';
+  IF membro_comprador AND membro_service AND membro_auth AND membro_fornecedor AND NOT membro_definer THEN
+    RAISE NOTICE 'PASS -- app_backend e membro de app_comprador/app_service/app_auth/app_fornecedor, e NAO de app_definer';
   ELSE
-    RAISE EXCEPTION 'FAIL -- grafo de membership inesperado (comprador=%, service=%, auth=%, definer=%)',
-      membro_comprador, membro_service, membro_auth, membro_definer;
+    RAISE EXCEPTION 'FAIL -- grafo de membership inesperado (comprador=%, service=%, auth=%, fornecedor=%, definer=%)',
+      membro_comprador, membro_service, membro_auth, membro_fornecedor, membro_definer;
   END IF;
 END
 $$;
@@ -91,6 +93,47 @@ BEGIN
     RAISE NOTICE 'PASS -- depois de SET ROLE app_comprador, SELECT em PedidoLote nao da permission denied (RLS passa a valer no lugar do bloqueio de privilegio)';
   ELSE
     RAISE EXCEPTION 'FAIL -- SET ROLE app_comprador nao desbloqueou SELECT em PedidoLote';
+  END IF;
+END
+$$;
+
+RESET ROLE;
+
+-- Mesmo padrao acima, agora pra app_fornecedor/Produto (E3): sem SET ROLE,
+-- NOINHERIT bloqueia; com SET ROLE, a politica produto_insert_fornecedor
+-- (WITH CHECK fornecedorId = app.fornecedor_id) e quem decide, nao o GRANT.
+DO $$
+DECLARE
+  bloqueado boolean := false;
+BEGIN
+  BEGIN
+    PERFORM 1 FROM "Produto" LIMIT 1 FOR UPDATE;
+  EXCEPTION WHEN insufficient_privilege THEN
+    bloqueado := true;
+  END;
+  IF bloqueado THEN
+    RAISE NOTICE 'PASS -- app_backend sem SET ROLE: UPDATE em Produto bloqueado (permission denied)';
+  ELSE
+    RAISE EXCEPTION 'FAIL -- app_backend sem SET ROLE conseguiu travar linha de Produto pra UPDATE (NOINHERIT nao esta funcionando)';
+  END IF;
+END
+$$;
+
+SET ROLE app_fornecedor;
+
+DO $$
+DECLARE
+  bloqueado boolean := false;
+BEGIN
+  BEGIN
+    PERFORM 1 FROM "Produto" LIMIT 1 FOR UPDATE;
+  EXCEPTION WHEN insufficient_privilege THEN
+    bloqueado := true;
+  END;
+  IF NOT bloqueado THEN
+    RAISE NOTICE 'PASS -- depois de SET ROLE app_fornecedor, UPDATE em Produto nao da permission denied (RLS passa a valer no lugar do bloqueio de privilegio)';
+  ELSE
+    RAISE EXCEPTION 'FAIL -- SET ROLE app_fornecedor nao desbloqueou UPDATE em Produto';
   END IF;
 END
 $$;

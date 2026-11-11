@@ -63,6 +63,19 @@ describe('RlsInterceptor', () => {
     expect(executeRaw).not.toHaveBeenCalled();
   });
 
+  it('seta app.fornecedor_id (nao app.comprador_id) quando o role e app_fornecedor', async () => {
+    const reflector = { get: jest.fn().mockReturnValue('app_fornecedor') } as unknown as Reflector;
+    const interceptor = new RlsInterceptor(prisma, reflector, dbContext);
+    const next: CallHandler = { handle: () => of('ok') };
+    const request = { principal: { sub: 'u1', role: 'FORNECEDOR', perfilId: 'forn-1' } };
+
+    await firstValueFrom(interceptor.intercept(buildContext(request), next));
+
+    expect(executeRawUnsafe).toHaveBeenCalledWith('SET LOCAL ROLE app_fornecedor');
+    expect(executeRaw).toHaveBeenCalledTimes(1);
+    expect(executeRaw.mock.calls[0][0][0]).toContain("set_config('app.fornecedor_id'");
+  });
+
   it('popula dbContext.tx dentro da transacao para o service usar', async () => {
     const reflector = { get: jest.fn().mockReturnValue('app_service') } as unknown as Reflector;
     const interceptor = new RlsInterceptor(prisma, reflector, dbContext);
