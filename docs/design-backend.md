@@ -1403,6 +1403,121 @@ serializar com um `pg_advisory_xact_lock`.
 
 ---
 
+## 13. Decisões de produto (12/11/2026)
+
+> Origem: `DEVELOPMENT.md` seção 9 ("Definidas em 12/11/2026"). Só
+> documentação — nenhuma migration nesta seção. O schema abaixo é uma
+> **proposta** a mostrar e aprovar no início da E3 (`DisponibilidadeFornecedor`)
+> e da E4 (`IntencaoCompra`, estado `CANDIDATO`), não algo já aplicado.
+
+### 13.1 D-A — Limiar de fechamento adaptativo
+
+O limiar que decide quando um lote fecha deixa de ser um parâmetro fixo
+(volume ou tempo) e passa a ser **variável de decisão do próprio AG**, por
+segmento (rota × região × categoria de produto): um lote do segmento fecha
+quando o volume acumulado atinge o limiar daquele segmento, quando a
+janela logística se encerra, ou quando o prazo máximo do fornecedor é
+atingido — o que vier primeiro —, sempre respeitando a quantidade mínima e
+máxima declaradas pelo fornecedor (`DisponibilidadeFornecedor`, 13.2). As
+políticas fixas (volume/temporal) continuam existindo, mas só como
+baseline de comparação do experimento (OE1 v4) — não como algo que o
+produto oferece como opção configurável.
+
+**Sem impacto de schema nesta etapa.** D-A é uma decisão do microsserviço
+de otimização (OE1 experimento + E5 "fechamento adaptativo" em produção) —
+o resultado ainda chega ao backend pelo mesmo contrato já desenhado na
+seção 7 (`POST /optimize` → decisão de fechar ou não um lote), só que a
+regra de decisão internamente usa o limiar do segmento em vez de um valor
+fixo. O override manual do admin (E5) usa o fluxo de auditoria que já
+existe (seção 6), sem entidade nova.
+
+**Em aberto, a resolver em `PARAMETROS.md` antes de rodar a v4** (já
+registrado em `DEVELOPMENT.md` seção 9): granularidade exata do segmento e
+como o limiar entra no cromossomo do AG.
+
+### 13.2 D-B — Formação de lote por casamento
+
+Hoje o fluxo é "fornecedor abre lote de um produto próprio, comprador
+adere". D-B inverte a iniciativa: o comprador declara **intenção** de
+compra sem compromisso financeiro, o fornecedor declara **disponibilidade**
+("eu despacho isso se juntar gente suficiente"), e um job de casamento (E5)
+cruza as duas pontas pra abrir um lote candidato que o fornecedor ainda
+precisa confirmar. Duas entidades novas, distribuídas E3 (disponibilidade,
+lado do fornecedor) / E4 (intenção, lado do comprador, + o estado
+`CANDIDATO`) / E5 (o job que as cruza):
+
+```prisma
+// Proposta -- mostrar e aprovar no inicio da E3, antes da migration.
+model DisponibilidadeFornecedor {
+  id                String         @id @default(cuid())
+  produtoId         String
+  produto           Produto        @relation(fields: [produtoId], references: [id])
+  // Denormalizado a partir de produto.fornecedorId: sem isso, a politica
+  // RLS de "fornecedor so ve/edita a propria disponibilidade" precisaria
+  // de uma subquery em Produto dentro do USING -- toda outra politica
+  // deste projeto (comprador_self, produto_update_fornecedor) compara uma
+  // coluna direta contra a variavel de sessao, nunca um subselect. Mantem
+  // o mesmo padrao, ao custo de ter que manter os dois campos
+  // consistentes (constraint ou trigger a decidir na migration real).
+  fornecedorId      String
+  fornecedor        Fornecedor     @relation(fields: [fornecedorId], references: [id])
+  quantidadeMinima  Float          // minimo de despacho
+  quantidadeMaxima  Float          // maximo disponivel -- CHECK quantidadeMinima <= quantidadeMaxima na migration real
+  hubsAtendidos     HubLogistico[] // m:n implicito do Prisma
+  prazoMaximoEsperaDias Int
+  vigenciaInicio    DateTime       @default(now())
+  vigenciaFim       DateTime?
+  createdAt         DateTime       @default(now())
+}
+
+// Proposta -- mostrar e aprovar no inicio da E4, antes da migration.
+model IntencaoCompra {
+  id            String       @id @default(cuid())
+  compradorId   String
+  comprador     Comprador    @relation(fields: [compradorId], references: [id])
+  produtoId     String
+  produto       Produto      @relation(fields: [produtoId], references: [id])
+  hubId         String
+  hub           HubLogistico @relation(fields: [hubId], references: [id])
+  quantidade    Float
+  prazoMaximo   DateTime
+  // Sem campo de valor/custo -- D-B e explicito que a intencao nao e
+  // compromisso financeiro (isso so existe depois que o lote CANDIDATO
+  // vira ABERTO e o comprador adere de verdade via PedidoLote).
+  createdAt     DateTime     @default(now())
+}
+```
+
+**RLS proposta** (mesmo padrão de `comprador_self`/`produto_update_fornecedor`,
+seção 4 / migrations `20260925152119`, `20261111151749`): `IntencaoCompra`
+com `FORCE ROW LEVEL SECURITY`, política `intencao_own` (`compradorId =
+app.comprador_id`) pra `SELECT`/`INSERT`, role `app_comprador`.
+`DisponibilidadeFornecedor` com `FORCE ROW LEVEL SECURITY`, política
+`disponibilidade_own` (`fornecedorId = app.fornecedor_id`) pra
+`SELECT`/`INSERT`/`UPDATE`/`DELETE`, role `app_fornecedor` — mesma simetria
+que `Produto` já tem. Leitura pública de `DisponibilidadeFornecedor`
+provavelmente **não** se aplica aqui (diferente do catálogo de `Produto`):
+quem precisa ler todas as disponibilidades pra cruzar com intenções é o
+job de casamento (E5), que roda como `app_service`, não como um visitante
+anônimo — a decidir no início da E3 se há algum caso de leitura pública
+legítima (ex.: o comprador ver "este produto tem X fornecedores dispostos
+a despachar" antes de registrar a intenção) ou se fica só `app_service` +
+o próprio dono.
+
+**`StatusLote.CANDIDATO`**: o enum já tem `ABERTO`/`FECHADO`/`DESPACHADO`/
+`ENTREGUE`/`CANCELADO` (seção 5.1) — falta só acrescentar `CANDIDATO` como
+estado inicial, antes de `ABERTO`, na migration da E4 (`CANDIDATO → ABERTO`
+quando o fornecedor confirma; `CANDIDATO → CANCELADO` se recusar ou
+expirar).
+
+**Em aberto, a decidir no início da E3** (schema acima é ponto de partida,
+não compromisso): se `hubsAtendidos` deve ser m:n (um fornecedor atende
+vários hubs com a mesma disponibilidade) ou se cada combinação
+produto×hub precisa da própria linha — a modelagem m:n acima assume a
+primeira leitura, mas não foi confirmada.
+
+---
+
 ## Checklist — decisões em aberto (uma pergunta por item, nenhuma assumida)
 
 > **Todas as perguntas abaixo foram respondidas — ver "Decisões aprovadas"
