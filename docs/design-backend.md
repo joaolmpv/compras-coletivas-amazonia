@@ -157,8 +157,11 @@ type Paginado<T> = {
 | `GET` | `/fornecedores/:id/reputacao` | público | já no contrato (CLAUDE.md) |
 | `POST` | `/produtos` | fornecedor | |
 | `GET` | `/produtos` | público | paginado, filtrável por `fornecedorId` |
+| `GET` | `/produtos/:id` | público | |
 | `PATCH` | `/produtos/:id` | fornecedor (dono) | |
+| `DELETE` | `/produtos/:id` | fornecedor (dono) | não estava na tabela original — adicionado na E3 pra fechar o CRUD completo exigido pelo roteiro; 409 `RECURSO_EM_USO` se houver `Lote` associado |
 | `GET` | `/hubs` | público | catálogo, sem escrita via API |
+| `GET` | `/hubs/:id` | público | |
 | `POST` | `/lotes` | fornecedor (só produto próprio) ou admin (qualquer produto) | decisão aprovada #2 |
 | `GET` | `/lotes` | público | paginado, filtrável por `status`/`hubId` |
 | `GET` | `/lotes/:id` | público | |
@@ -248,6 +251,7 @@ export const BreakdownResponseSchema = z.object({
 | `REFRESH_TOKEN_INVALIDO` | 401 | refresh token revogado, reutilizado após rotação, ou expirado |
 | `SEM_PERMISSAO` | 403 | papel correto, mas não é o dono do recurso |
 | `RECURSO_NAO_ENCONTRADO` | 404 | id não existe (ou RLS devolveu vazio — ver nota abaixo) |
+| `RECURSO_EM_USO` | 409 | adicionado na E3: `DELETE /produtos/:id` com `Lote` associado (violação de FK, P2003) |
 | `LOTE_JA_FECHADO` | 409 | tentativa de aderir/editar um lote fora do estado `ABERTO` |
 | `CAPACIDADE_EXCEDIDA` | 409 | volume do pedido ultrapassa capacidade restante do hub |
 | `COMPRADOR_JA_ADERIU` | 409 | violação do `@@unique([loteId, compradorId])` |
@@ -941,6 +945,22 @@ Ordem de dependência:
 | `app_service` | `NOLOGIN NOSUPERUSER NOBYPASSRLS` (novo) | Operações privilegiadas do próprio backend (fechamento de lote, pagamento, repasse, auditoria) — ver 12.1.1. |
 | `app_auth` | `NOLOGIN NOSUPERUSER NOBYPASSRLS` (novo) | Login, refresh, logout, cadastro — ver 12.1.2. |
 | `app_definer` | `NOLOGIN NOSUPERUSER NOBYPASSRLS` (novo) | **Dono só de `fn_breakdown_lote`**, nada mais — substitui `postgres` como dono da função, removendo o superuser de uma função `SECURITY DEFINER` que só precisa de `SELECT` em uma tabela. |
+
+**Atualização E3 (11/nov/2026) — sexto role, `app_fornecedor`**: a tabela
+acima é a que foi aprovada no E1 ("cinco roles"); a E3 (Catálogo) precisou
+de um sexto, simétrico a `app_comprador`, pro mesmo motivo — "fornecedor só
+edita os próprios produtos" (critério da E3) exige uma garantia estrutural
+(RLS), não só uma checagem na aplicação. `app_fornecedor` (`NOLOGIN
+NOSUPERUSER NOBYPASSRLS`, membro de `app_backend`) + variável de sessão
+`app.fornecedor_id` replicam exatamente o padrão `app_comprador`/
+`app.comprador_id`. RLS (antes inexistente) foi habilitado em `Produto`
+(leitura pública, escrita restrita ao dono) e em `Fornecedor` (leitura
+pública, `UPDATE` restrito ao próprio — cobre o `PATCH /fornecedores/me`
+desta mesma seção). Ver migrations `20261111151749`, `20261111152103` e
+`20261111152951` (a última corrige uma regressão: `app_auth` perdeu a
+capacidade de inserir em `Fornecedor` no cadastro quando RLS foi
+habilitado ali, sem política de `INSERT` — mesma classe de bug já vista em
+`comprador_insert_cadastro`, migration `20261029191915`).
 
 **`NOINHERIT` em `app_backend`** continua sendo o detalhe que faz o
 objetivo funcionar (não estava no enunciado original, documentado como

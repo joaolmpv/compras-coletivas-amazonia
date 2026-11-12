@@ -7,9 +7,10 @@ import { CommonModule } from './common/common.module';
 import { RlsInterceptor } from './common/rls.interceptor';
 import { HttpExceptionFilter } from './common/http-exception.filter';
 import { AuthModule } from './auth/auth.module';
+import { CatalogoModule } from './catalogo/catalogo.module';
 
 @Module({
-  imports: [PrismaModule, CommonModule, AuthModule],
+  imports: [PrismaModule, CommonModule, AuthModule, CatalogoModule],
   controllers: [AppController],
   providers: [
     AppService,

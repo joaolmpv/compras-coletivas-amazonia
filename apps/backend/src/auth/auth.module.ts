@@ -18,6 +18,11 @@ import { JwtAuthGuard } from './jwt-auth.guard';
   // importado uma unica vez em AppModule) para garantir a mesma instancia
   // request-scoped que o RlsInterceptor usa.
   providers: [AuthService, JwtAuthGuard],
-  exports: [JwtAuthGuard],
+  // Reexporta JwtModule, nao so JwtAuthGuard: quem importa AuthModule (ex.
+  // CatalogoModule) usa @UseGuards(JwtAuthGuard) nos proprios controllers,
+  // e isso faz o Nest tentar resolver as dependencias do guard (JwtService)
+  // dentro do modulo IMPORTADOR -- sem reexportar JwtModule, JwtService fica
+  // invisivel la e o DI falha ("JwtService... available in the CatalogoModule").
+  exports: [JwtAuthGuard, JwtModule],
 })
 export class AuthModule {}

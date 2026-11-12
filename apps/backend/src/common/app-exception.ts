@@ -9,7 +9,8 @@ export type ErrorCode =
   | 'CREDENCIAIS_INVALIDAS'
   | 'EMAIL_JA_CADASTRADO'
   | 'SEM_PERMISSAO'
-  | 'RECURSO_NAO_ENCONTRADO';
+  | 'RECURSO_NAO_ENCONTRADO'
+  | 'RECURSO_EM_USO';
 
 export class AppException extends HttpException {
   constructor(
