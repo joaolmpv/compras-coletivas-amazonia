@@ -1,13 +1,14 @@
 # DEVELOPMENT.md — Roteiro de Desenvolvimento
 
 > **Leia este arquivo no início de cada sessão.** Ele é a fonte de verdade sobre
-> o que fazer, em que ordem, e sob quais regras. Para detalhe de arquitetura,
+> o que fazer, em que ordem e sob quais regras. Para detalhe de arquitetura,
 > consulte `docs/design-backend.md`.
 
 **Projeto:** Plataforma full-stack de compras coletivas B2B para a Amazônia Legal
 **Autor:** João de Lima Paiva — Bacharelado em Ciência da Computação, UFJ
 **Orientador:** Prof. Me. Thomaz Felipe Soares Arnizant
 **Defesa:** dezembro/2026
+**Última atualização:** 12/11/2026 — inclui as decisões D-A (limiar adaptativo) e D-B (formação de lote por casamento)
 
 ---
 
@@ -25,6 +26,7 @@ Valem em todas as etapas, sem exceção.
 8. **Não reduza escopo por prazo.** Se algo não couber, reporte; a decisão de cortar é do autor.
 9. **Não ajuste parâmetros de experimento para atingir um critério.** Reporte o resultado como saiu.
 10. **Nunca registre senha, connection string ou segredo** em arquivo versionado.
+11. **Nomes de entidades no código acompanham o texto do TCC** (PascalCase, em português): `IntencaoCompra`, `DisponibilidadeFornecedor` etc.
 
 ---
 
@@ -51,16 +53,37 @@ alinhar isso antes (pode conflitar na porta 5433).
 Estes critérios são o que a banca vai cobrar. Não reinterprete.
 
 ### OE1 — Otimização de lotes
-Framework de duas etapas (K-Means + AG variante MDVRP) em Python com DEAP.
-Instâncias de 10, 50 e 200 compradores. Matrizes de custo com os **três modais**
-(rodoviário, fluvial, aéreo), com sazonalidade fluvial e faixas do aéreo expresso.
-O algoritmo escolhe o modal de menor custo por rota.
-**Critério:** redução ≥15% no custo médio de frete por comprador vs. baseline greedy de limiar fixo.
+Framework de duas etapas (K-Means + AG variante MDVRP capacitado) em Python com
+DEAP. Instâncias de 10, 50 e 200 compradores. Matrizes de custo com os **três
+modais** (rodoviário, fluvial, aéreo), com sazonalidade fluvial e faixas do aéreo
+expresso (tarifa de referência fluvial R$0,97/t-km). O algoritmo escolhe o modal de
+menor custo por rota. Aptidão multiobjetivo (custo + tempo de espera) com NSGA-II.
+
+**Decisão D-A (12/11/2026) — limiar adaptativo:** o limiar de fechamento é variável
+de decisão do AG, por **segmento** (rota × região × categoria de produto), e não
+parâmetro fixo. Um lote do segmento fecha quando o volume acumulado atinge o limiar
+do segmento, quando a janela logística se encerra ou quando o prazo máximo do
+fornecedor é atingido — o que vier primeiro —, respeitando a quantidade mínima e
+máxima declaradas pelo fornecedor. A avaliação considera o custo marginal de esperar.
+
+**Critério (redação proposta, levar ao orientador):** H2 verificada se o AG com
+limiar adaptativo reduzir ≥15% o custo médio por comprador em relação a **cada**
+política fixa — volume fixo e temporal fixo, cada uma com parâmetro único calibrado
+em seeds de ajuste disjuntas e aplicado uniformemente a todas as rotas —, nas três
+escalas, medido no ponto da fronteira de Pareto com **tempo de espera igual ou
+inferior** ao da política comparada. H1 verificada se o AG tiver custo
+significativamente menor que "sem consolidação".
+
+⚠️ **Não enfraquecer o baseline:** as políticas fixas são a **melhor** configuração
+uniforme calibrada, nunca um valor arbitrário. Comparar com um limiar fixo ruim seria
+um espantalho.
 
 ### OE2 — Banco de dados
-PostgreSQL + Prisma. Entidades centrais: `Comprador`, `Fornecedor`, `Produto`,
-`Lote`, `PedidoLote`, `HubLogistico`, `Avaliacao`. Entidades de suporte: `Usuario`,
-`SessaoRefreshToken`, `Pagamento`, `Repasse`, `LogAuditoria`. RLS multi-ator e transações ACID.
+PostgreSQL + Prisma. Entidades centrais: `Comprador`, `Fornecedor`, `Produto`, `Lote`,
+`PedidoLote`, `HubLogistico`, `Avaliacao`, **`IntencaoCompra`** e
+**`DisponibilidadeFornecedor`** (as duas últimas criadas nas etapas E3/E4, decisão D-B).
+Entidades de suporte: `Usuario`, `SessaoRefreshToken`, `Pagamento`, `Repasse`,
+`LogAuditoria`. RLS multi-ator e transações ACID.
 **Critério:** tolerância zero a inconsistência em testes de integridade.
 
 ### OE3 — Interface e transparência
@@ -69,8 +92,9 @@ rateio a partir do que a tela exibe.
 **Critério:** teste de usabilidade com 3 empreendedores locais; ao menos 2 de 3 reproduzem o cálculo sem ajuda.
 
 ### OE4 — Reputação
-Sentimento via Google Cloud Natural Language API + 4 métricas operacionais
-(taxa de entrega no prazo, índice de reclamações, volume histórico, tempo médio de resposta).
+Sentimento via Google Cloud Natural Language API + 4 métricas operacionais (taxa de
+entrega no prazo, índice de reclamações, volume histórico, tempo médio de resposta).
+O índice também ordena a notificação de fornecedores no casamento (D-B).
 **Critério:** correlação de Pearson ≥0,6 entre o índice e o desempenho histórico objetivo.
 
 ---
@@ -80,22 +104,22 @@ Sentimento via Google Cloud Natural Language API + 4 métricas operacionais
 | Etapa | Escopo | Status |
 |---|---|---|
 | **OE1 v1/v2/v3** | Experimentos do otimizador | ✅ Concluída |
-| **OE1 v3.1** | Análise estatística adicional | ⬜ Pendente |
-| **Design backend** | `docs/design-backend.md` (12 decisões) | ✅ Concluída |
+| **OE1 v4** | Limiar adaptativo (D-A) + análise estatística (absorve a antiga v3.1) | ⬜ Pendente |
+| **Design backend** | `docs/design-backend.md` (12 decisões + seção 13 a criar com D-A/D-B) | ✅ / 🔄 seção 13 |
 | **E1** | Migrations, RLS, roles, testes de isolamento | ✅ Concluída (mergeada) |
 | **E2** | Identidade e autenticação | 🔄 Próxima |
-| **E3** | Catálogo (fornecedores, produtos, hubs) | ⬜ Pendente |
-| **E4** | Lotes, adesão, rateio, pagamento | ⬜ Pendente |
-| **E5** | Integração com o otimizador (fila) | ⬜ Pendente |
+| **E3** | Catálogo + `DisponibilidadeFornecedor` | ⬜ Pendente |
+| **E4** | `IntencaoCompra`, lote `CANDIDATO`, confirmação do fornecedor, adesão, rateio, pagamento | ⬜ Pendente |
+| **E5** | Otimizador por fila + job de casamento + fechamento adaptativo | ⬜ Pendente |
 | **E6** | Auditoria com hash encadeado | ⬜ Pendente |
 | **E7** | SSE e rate limiting | ⬜ Pendente |
-| **F1** | Frontend — comprador (lotes + breakdown) | ⬜ Pendente |
-| **F2** | Frontend — fornecedor | ⬜ Pendente |
+| **F1** | Frontend — comprador (intenção, lotes, breakdown) | ⬜ Pendente |
+| **F2** | Frontend — fornecedor (disponibilidade, confirmação de oferta) | ⬜ Pendente |
 | **F3** | Frontend — administrador | ⬜ Pendente |
 | **OE4** | Módulo de reputação | ⬜ Pendente |
 | **D1** | Deploy e provisionamento Supabase | ⬜ Pendente |
 | **V1** | Teste de usabilidade (3 empreendedores) | ⬜ Pendente — **agendar com antecedência** |
-| **T1** | Capítulo de resultados do TCC | ⬜ Pendente |
+| **T1** | Texto do TCC: aplicar `ACRESCIMOS_TCC2.tex` e preencher Resultados | 🔄 Entregue ao autor, aplicação manual |
 
 ---
 
@@ -117,7 +141,7 @@ Prisma é gerado no client); ataque de tabela temporária neutralizado pelo
 
 ### E2 — Identidade e autenticação 🔄
 
-**Branch:** `feature/be-e2-auth`
+**Branch:** `feature/be-e2-auth` — **não é afetada por D-A nem D-B.**
 
 **Escopo:**
 - Model `Usuario`: argon2id, papel (`COMPRADOR`/`FORNECEDOR`/`ADMIN`), relação 1:1 opcional com `Comprador`/`Fornecedor`
@@ -133,52 +157,64 @@ Prisma é gerado no client); ataque de tabela temporária neutralizado pelo
 - `app_auth` lê `Usuario` e **não** lê `PedidoLote`/`Pagamento`
 - Cobertura ≥70% no módulo
 
-### E3 — Catálogo
+### E3 — Catálogo e disponibilidade do fornecedor
 
 **Branch:** `feature/be-e3-catalogo`
 
-**Escopo:** módulos de `Fornecedor`, `Produto` e `HubLogistico`, com DTOs Zod,
-paginação e códigos de erro padronizados.
+**Escopo:**
+- Módulos de `Fornecedor`, `Produto` e `HubLogistico`, com DTOs Zod, paginação e códigos de erro padronizados
+- **Nova entidade `DisponibilidadeFornecedor` (D-B):** por produto, o fornecedor declara quantidade mínima de despacho, quantidade máxima disponível, hubs atendidos, prazo máximo de espera aceito e vigência
+- Mostrar o schema proposto e aguardar aprovação antes da migration
 
 **Critérios:** CRUD completo com validação; fornecedor só edita os próprios
-produtos; testes de integração por endpoint.
+produtos e a própria disponibilidade (RLS + teste via role real); mínimo ≤ máximo
+garantido no banco (CHECK); testes de integração por endpoint.
 
-### E4 — Lotes, adesão, rateio e pagamento
+### E4 — Intenção, lote candidato, adesão, rateio e pagamento
 
 **Branch:** `feature/be-e4-lotes`
 
+**Decisão técnica no início da etapa (mostrar proposta, aguardar aprovação):**
+`Avaliacao` verificada — proposta: `Avaliacao.pedidoLoteId` único, permitida só
+após `ENTREGUE` (robustez contra avaliação manipulada, OE4).
+
 **Escopo:**
-- Criação de lote (fornecedor para os próprios produtos; admin para qualquer um) 🔶
-- Adesão do comprador (`PedidoLote`)
+- **Nova entidade `IntencaoCompra` (D-B):** comprador registra produto, quantidade, hub de destino e prazo máximo, sem compromisso financeiro; RLS: comprador só vê as próprias
+- **Estado `CANDIDATO`** no enum `StatusLote` (e `ENTREGUE`, se ainda não existir)
+- Fluxo de confirmação: lote `CANDIDATO` → fornecedor confirma preço e limites → `ABERTO`; recusa ou expiração → `CANCELADO`
+- Adesão do comprador (`PedidoLote`), convertendo intenções compatíveis
 - Cálculo de rateio proporcional em transação ACID
 - Endpoint de breakdown auditável (via `fn_breakdown_lote`)
-- Máquina de estados do lote (`ABERTO` → `FECHADO` → `DESPACHADO` → `ENTREGUE`/`CANCELADO`)
-- Pagamento por `PedidoLote` + `Repasse` por `Lote`, com gateway simulado 🔶
+- Máquina de estados (`CANDIDATO` → `ABERTO` → `FECHADO` → `DESPACHADO` → `ENTREGUE`, com `CANCELADO` a partir de `CANDIDATO`/`ABERTO`)
+- Pagamento por `PedidoLote` + `Repasse` por `Lote`, com gateway simulado
 
 **Critérios:**
 - O breakdown devolve totais + própria linha identificada + demais anonimizadas, em dados suficientes para refazer a conta
 - Rateio nunca deixa o banco inconsistente (teste de concorrência)
+- Lote nunca abre acima da quantidade máxima nem fecha abaixo da mínima do fornecedor
 - `app_service` recebe os GRANTs desta etapa, com teste via role real
 - Transições inválidas de estado são rejeitadas
 
-### E5 — Integração com o otimizador
+### E5 — Otimizador, casamento e fechamento adaptativo
 
 **Branch:** `feature/be-e5-otimizacao`
 
-**Escopo:** cliente RabbitMQ no NestJS; consumidor `aio-pika` no FastAPI;
-idempotência por chave; DLQ e retry; fechamento automático com override do admin 🔶;
-versão do algoritmo gravada em cada execução. Manter os endpoints REST do FastAPI
-(`/optimize`, `/health`, OpenAPI).
+**Escopo:**
+- Cliente RabbitMQ no NestJS; consumidor `aio-pika` no FastAPI; idempotência por chave; DLQ e retry; versão do algoritmo gravada em cada execução; manter REST do FastAPI (`/optimize`, `/health`, OpenAPI)
+- **Job de casamento (D-B):** agrega `IntencaoCompra` por produto/região; quando a demanda alcança a mínima de alguma `DisponibilidadeFornecedor` dentro da janela, cria lote `CANDIDATO` e notifica fornecedores aptos (ordem pelo índice de reputação quando o OE4 existir; antes disso, ordem documentada e determinística)
+- **Fechamento adaptativo (D-A):** o otimizador decide o fechamento com o limiar do segmento; override manual do admin registrado na auditoria
 
 **Critérios:** mensagem duplicada não reprocessa; falha do otimizador não trava o
-lote; a versão do algoritmo fica rastreável por execução.
+lote; a versão do algoritmo é rastreável por execução; o job de casamento não cria
+dois lotes candidatos para a mesma demanda (teste de concorrência).
 
 ### E6 — Auditoria
 
 **Branch:** `feature/be-e6-auditoria`
 
 **Escopo:** log append-only com hash encadeado, sob advisory lock, integrado às
-escritas financeiras e de lotes e aos eventos de autenticação.
+escritas financeiras e de lotes, às transições de estado (incluindo `CANDIDATO`) e
+aos eventos de autenticação.
 
 **Pergunta em aberto:** quem calcula o hash encadeado, se `app_service` só tem
 INSERT? (Proposta: trigger `BEFORE INSERT` que calcula o hash, com leitura dada
@@ -191,12 +227,13 @@ registro quebra a verificação da cadeia; contenção do advisory lock medida.
 
 **Branch:** `feature/be-e7-realtime`
 
-**Escopo:** SSE do estado dos lotes (cookie httpOnly, conexão direta ao NestJS);
-rate limiting conforme a tabela da seção 12 do design.
+**Escopo:** SSE do estado dos lotes (cookie httpOnly, conexão direta ao NestJS),
+incluindo a notificação de lote candidato ao fornecedor; rate limiting conforme a
+tabela da seção 12 do design.
 
 **Limites:** global 100/min/IP; login 5/min/IP+email com backoff; refresh 10/min;
-adesão 20/min/usuário; otimização 3/min/admin com dedup; avaliação 10/h/usuário;
-3 conexões SSE/usuário.
+adesão 20/min/usuário; intenção de compra 20/min/usuário; otimização 3/min/admin
+com dedup; avaliação 10/h/usuário; 3 conexões SSE/usuário.
 
 ---
 
@@ -210,8 +247,9 @@ assim que a E2 definir o contrato.
 
 **Prioridade máxima:** a tela de breakdown é o que será testado com usuários (OE3).
 
-**Telas:** dashboard de lotes ativos (data de fechamento, participantes, economia
-vs. frete individual); detalhes do lote com breakdown completo de custos;
+**Telas:** registro de intenção de compra; dashboard de lotes ativos (data de
+fechamento, participantes, economia vs. frete individual); convite de adesão a lote
+aberto compatível com a intenção; detalhes do lote com breakdown completo de custos;
 acompanhamento de status de entrega; perfil e histórico.
 
 **Critério do breakdown:** o comprador precisa ver o custo total de frete, o volume
@@ -220,14 +258,16 @@ no papel.
 
 ### F2 — Fornecedor
 
-**Telas:** ofertas ativas com status; minha reputação (índice composto com os
-componentes explicitados); histórico de repasses.
+**Telas:** declaração de disponibilidade por produto (mínimo, máximo, hubs, prazo,
+vigência); lotes candidatos aguardando confirmação (volume potencial, prazo para
+responder, botão confirmar/recusar com preço e limites); ofertas ativas com status;
+minha reputação (índice composto com componentes explicitados); histórico de repasses.
 
 ### F3 — Administrador
 
-**Telas:** dashboard de saúde (taxa de consolidação, economia média, usuários
-ativos, lotes processados); gestão de hubs; resolução de disputas; override de
-fechamento de lote.
+**Telas:** dashboard de saúde (taxa de consolidação, economia média, usuários ativos,
+lotes processados, intenções sem atendimento por região); gestão de hubs; resolução de
+disputas; override de fechamento de lote.
 
 ---
 
@@ -241,6 +281,7 @@ fechamento de lote.
 - Extração de dimensões qualitativas: pontualidade, qualidade do produto, embalagem, atendimento pós-venda
 - Detecção de padrões de insatisfação recorrente (alerta preventivo antes de a média cair)
 - Ranking público com critérios de composição explicitados
+- Integração com o job de casamento (E5): ordem de notificação dos fornecedores aptos
 
 **Critérios:**
 - Correlação de Pearson ≥0,6 entre o índice e o desempenho histórico objetivo, em dados simulados
@@ -258,9 +299,12 @@ fechamento de lote.
 4. RLS habilitado em todas as tabelas, inclusive catálogo (defesa em profundidade)
 5. Senha do `app_backend` via `scripts/provision-roles.sh`, lendo variável de ambiente
 
-**Validado no Supabase (Fase A/B):** `SET LOCAL ROLE` funciona no pooler transaction
-mode; a identidade não vaza entre transações; o provedor permite criar role com
-`BYPASSRLS` (mantemos políticas explícitas mesmo assim).
+**Validado no Supabase em 29/10/2026 (projeto de teste descartável):**
+- `postgres` do Supabase: `rolsuper=false`, `rolcreaterole=true`, `rolbypassrls=true`
+- `CREATE ROLE ... BYPASSRLS` permitido (mantemos políticas explícitas mesmo assim)
+- `ALTER FUNCTION ... OWNER TO` funcionou com os dois GRANTs do item 1
+- `anon`/`authenticated`/`service_role` recebem todos os privilégios por padrão em tabelas e funções de `public` (via `pg_default_acl`); `REVOKE FROM PUBLIC` não os remove
+- Pooler transaction mode (6543): sem `SET ROLE` → `permission denied`; com `SET LOCAL ROLE` + `app.comprador_id` → RLS filtra e `SECURITY DEFINER` funciona; após commit, a identidade não vaza
 
 **Nota:** testar conectividade com o pooler a partir de container Docker exige `--network host`.
 
@@ -281,25 +325,34 @@ mode; a identidade não vaza entre transações; o provedor permite criar role c
 
 ---
 
-## 9. Pendências de decisão
+## 9. Decisões
 
-### Com o orientador 🔶
-| # | Questão | Impacto |
+### Definidas em 12/11/2026
+| ID | Decisão | Etapas afetadas |
 |---|---|---|
-| 1 | A qual baseline o critério ≥15% do OE1 se refere? (`greedy_volume` ou `greedy_temporal`) | Determina se H2 é verificada |
-| 2 | Quem pode criar lote: fornecedor dos próprios produtos, ou só admin? | E4 |
-| 3 | Fechamento de lote automático com override manual? | E5 |
-| 4 | Pagamento por `PedidoLote` com repasse por `Lote`? | E4, modelo de dados |
+| D-A | Limiar de fechamento adaptativo por segmento (rota × região × categoria), variável de decisão do AG | OE1 v4, E5 |
+| D-B | Formação de lote por casamento: `IntencaoCompra` + `DisponibilidadeFornecedor` + estado `CANDIDATO` + confirmação do fornecedor | E3, E4, E5, F1, F2, OE4 |
+| — | Pagamento por `PedidoLote` + `Repasse` por `Lote`, gateway simulado | E4 |
+| — | Fechamento automático (agora adaptativo) com override manual do admin | E5 |
+
+### Informar ao orientador (não bloqueiam o desenvolvimento)
+- D-A e D-B como evolução do escopo
+- Correção CVRP → MDVRP capacitado no texto
+- Declaração de IA ampliada
+- **Redação do critério de H2** (custo com espera igual ou inferior, contra cada política fixa calibrada) — esta muda texto de objetivo aprovado: aguardar o aval antes de aplicar no TCC
+- Cronograma revisado
 
 ### Técnicas em aberto
 - E6: quem calcula o hash encadeado se `app_service` só tem INSERT?
 - `UPDATE` de `Comprador`: todas as colunas ou só as editáveis pelo próprio?
-- `Avaliacao` verificada: ligar ao `PedidoLote` entregue? (muda o schema — decidir antes da E4)
+- `Avaliacao` verificada (decidir no início da E4)
+- D-A: granularidade dos segmentos e codificação do limiar no cromossomo (definir em `PARAMETROS.md` **antes** de rodar a v4)
 
 ---
 
-## 10. Resultados do OE1 (v3)
+## 10. OE1 — resultados e próxima iteração
 
+### Resultados da v3
 30 instâncias pareadas, NSGA-II, `m=2`, RNG corrigido.
 
 **Custo médio por comprador (R$):**
@@ -318,42 +371,49 @@ mode; a identidade não vaza entre transações; o provedor permite criar role c
 | 50 | 2,4% | 61,2% | 72,3% |
 | 200 | **−3,0%** | 62,8% | 74,3% |
 
-**Leitura honesta:** o critério ≥15% **não** é atingido contra `greedy_volume` em
-nenhuma instância. É atingido contra `greedy_temporal` e `sem_consolidação`. H1
-(consolidar reduz frete) está sustentada. H2 deve ser escrita como parcialmente
-verificada, com discussão do porquê (com custo fixo de despacho e capacidade
-limitada, o problema se aproxima de empacotamento, onde um greedy já é forte).
+**Leitura honesta:** o critério ≥15% não é atingido contra `greedy_volume`. As
+reduções contra `greedy_temporal` foram medidas no ponto de menor custo, com espera de
+até 38 dias em n=200 — não são ganho equivalente. H1 está sustentada.
 
-**v1 e v2:** executadas antes da correção do bug de RNG do DEAP (os operadores
-usavam o `random` global, não a instância seedada). São etapas superadas e **não
-são reproduzíveis pela seed documentada**. Errata registrada em `PARAMETROS.md`.
+**v1 e v2:** executadas antes da correção do bug de RNG do DEAP. Não são
+reproduzíveis pela seed documentada. Errata em `PARAMETROS.md`.
 
-### OE1 v3.1 — análise pendente
-1. IC 95% (bootstrap) e Wilcoxon pareado por comparação e por `n`
-2. Dominância de Pareto: algum ponto da fronteira do AG domina cada baseline?
-3. Convergência do `ag_direto` com o dobro de gerações/população
-4. Confirmar que o limiar do `greedy_volume` foi reajustado com o mesmo protocolo
-5. Reajuste de `m` com NSGA-II (ngen=90), incluindo `m=1` e `m=1,5`
-6. Gerações até a estagnação por instância
-7. Sensibilidade do H1: custo fixo e capacidade em ±50%
+### OE1 v4 — limiar adaptativo (D-A) + análise estatística
+**Branch:** `feature/oe1-v4` (pode rodar em worktree paralela à trilha do backend)
+
+**Antes de rodar (escrever em `PARAMETROS.md` e parar para aprovação):**
+- Definição de segmento (rota × região × categoria de produto) e como o limiar entra no cromossomo
+- Limites do fornecedor e janelas sazonais simulados por segmento, com fonte ou marcados como premissa
+- Regra de seleção do ponto da fronteira: o de espera igual ou inferior à da política comparada
+
+**Protocolo:**
+1. Estratégias: (a) AG com limiar adaptativo; (b) volume fixo; (c) temporal fixo; (d) sem consolidação; (e) AG sem agrupamento (ablação)
+2. (b) e (c): parâmetro único calibrado nas seeds de ajuste, aplicado igual a todas as rotas
+3. 30 instâncias pareadas por porte (10/50/200), seeds de avaliação disjuntas
+4. Métricas: custo médio por comprador, tempo médio de espera, gerações até estagnação, desvio-padrão
+5. Estatística: IC 95% (bootstrap) e Wilcoxon pareado, por comparação e por n; % de instâncias em que o AG vence
+6. Pareto: dominância sobre cada baseline e custo com espera igualada
+7. Convergência da variante (e) com o dobro de gerações/população
+8. Sensibilidade do H1: custo fixo de despacho e capacidade em ±50%
+9. Reanalisar a v3 com os itens 5–6 (registro histórico)
+
+**Proibido:** ajustar granularidade de segmento, regra de fechamento ou parâmetros
+depois de ver resultados de avaliação. Reportar como sair.
 
 ---
 
-## 11. Acréscimos pendentes ao texto do TCC
+## 11. Texto do TCC
 
-Consolidar em arquivo único quando solicitado. Não perder nenhum item.
+Os acréscimos foram consolidados em **`ACRESCIMOS_TCC2.tex`** (12/11/2026, 17 blocos,
+com local e ação de cada um). A aplicação no Overleaf é feita pelo autor. Blocos 04 e
+06 dependem do aval do orientador.
 
-- Nota metodológica v1/v2/v3 e errata do bug de RNG
-- Bugs encontrados pelos próprios testes (GRANT sem `id`; ataque de tabela temporária)
-- Premissas de parâmetros (`PARAMETROS.md`) e a ambiguidade do baseline do OE1
-- Redação de H1 e H2 conforme o que foi medido
-- Declaração de uso de IA ampliada (inclui Claude Code para desenvolvimento, não só revisão textual)
-- Cronograma real vs. planejado
-- Fila RabbitMQ na descrição da integração (o texto atual cita só REST)
-- Entidades centrais vs. de suporte no OE2
-- Pagamento com garantia modelado como fluxo, com gateway simulado
-- Modelo de roles com `NOINHERIT` e teste com código de saída (capítulo de segurança)
-- Achados de deploy do Supabase (grants padrão de `anon`/`authenticated`/`service_role`)
+**Pendentes de preenchimento após execução (marcados [PREENCHER] no Bloco 16):**
+resultados da v4; testes de concorrência da E4; teste de usabilidade (OE3);
+correlação e robustez do OE4.
+
+Novos itens que surgirem durante o desenvolvimento entram aqui, para a próxima rodada:
+- (nenhum até o momento)
 
 ---
 
@@ -370,5 +430,5 @@ cd services/optimizer && source .venv/bin/activate
 python genetic_algorithm.py
 
 # Trabalho paralelo (duas sessões sem conflito)
-git worktree add ../tcc-oe1 -b feature/oe1-v31 dev
+git worktree add ../tcc-oe1 -b feature/oe1-v4 dev
 ```
