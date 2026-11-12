@@ -10,7 +10,8 @@ export type ErrorCode =
   | 'EMAIL_JA_CADASTRADO'
   | 'SEM_PERMISSAO'
   | 'RECURSO_NAO_ENCONTRADO'
-  | 'RECURSO_EM_USO';
+  | 'RECURSO_EM_USO'
+  | 'DISPONIBILIDADE_JA_EXISTE';
 
 export class AppException extends HttpException {
   constructor(

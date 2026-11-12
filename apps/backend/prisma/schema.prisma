@@ -94,37 +94,70 @@ model Comprador {
 }
 
 model Fornecedor {
-  id              String      @id @default(cuid())
-  name            String
-  document        String      @unique // CNPJ
+  id                 String                      @id @default(cuid())
+  name               String
+  document           String                      @unique // CNPJ
   // Calculado pelo modulo de analise de sentimento (OE4) a partir das avaliacoes.
-  reputationScore Float?
-  usuario         Usuario?
-  produtos        Produto[]
-  avaliacoes      Avaliacao[]
-  repasses        Repasse[]
-  createdAt       DateTime    @default(now())
+  reputationScore    Float?
+  usuario            Usuario?
+  produtos           Produto[]
+  avaliacoes         Avaliacao[]
+  repasses           Repasse[]
+  disponibilidades   DisponibilidadeFornecedor[] // D-B (E3)
+  createdAt          DateTime                    @default(now())
 }
 
 model Produto {
-  id           String     @id @default(cuid())
-  name         String
-  description  String?
-  unitPrice    Float
-  fornecedorId String
-  fornecedor   Fornecedor @relation(fields: [fornecedorId], references: [id])
-  lotes        Lote[]
-  createdAt    DateTime   @default(now())
+  id               String                      @id @default(cuid())
+  name             String
+  description      String?
+  unitPrice        Float
+  fornecedorId     String
+  fornecedor       Fornecedor                  @relation(fields: [fornecedorId], references: [id])
+  lotes            Lote[]
+  disponibilidades DisponibilidadeFornecedor[] // D-B (E3)
+  createdAt        DateTime                    @default(now())
 }
 
 model HubLogistico {
-  id                String @id @default(cuid())
-  name              String @unique
+  id                String                      @id @default(cuid())
+  name              String                      @unique
   city              String
   fixedDispatchCost Float // custo fixo por despacho de lote (frete fluvial/aereo)
   variableCostPerM3 Float
   capacityM3        Float
   lotes             Lote[]
+  disponibilidades  DisponibilidadeFornecedor[] // D-B (E3)
+}
+
+// D-B (decisao 12/11/2026, design-backend.md 13.2): o fornecedor declara,
+// por produto X hub, que despacha se o volume acumulado ficar entre
+// quantidadeMinima e quantidadeMaxima dentro do prazo. Uma linha por
+// combinacao produto+hub (decisao aprovada -- nao m:n: hubs diferentes
+// podem ter limites diferentes, ex. hub mais distante aceita volume
+// minimo menor). fornecedorId e denormalizado de produto.fornecedorId de
+// proposito -- RLS compara coluna direta contra app.fornecedor_id, nunca
+// um subselect em Produto (mesmo padrao de produto_update_fornecedor);
+// quem garante a consistencia e a camada de aplicacao (o service so
+// aceita produtoId que pertence ao proprio fornecedor autenticado), nao
+// um trigger -- mesmo espirito de ProdutosService.criar (fornecedorId
+// sempre vem do JWT, nunca do payload).
+model DisponibilidadeFornecedor {
+  id                    String       @id @default(cuid())
+  produtoId             String
+  produto               Produto      @relation(fields: [produtoId], references: [id])
+  fornecedorId          String
+  fornecedor            Fornecedor   @relation(fields: [fornecedorId], references: [id])
+  hubId                 String
+  hub                   HubLogistico @relation(fields: [hubId], references: [id])
+  quantidadeMinima      Float // minimo de despacho -- CHECK <= quantidadeMaxima na migration
+  quantidadeMaxima      Float // maximo disponivel
+  prazoMaximoEsperaDias Int
+  vigenciaInicio        DateTime     @default(now())
+  vigenciaFim           DateTime?
+  createdAt             DateTime     @default(now())
+
+  @@unique([produtoId, hubId])
 }
 
 model Lote {

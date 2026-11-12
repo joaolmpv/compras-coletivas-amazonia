@@ -44,6 +44,9 @@ describe('CatalogoModule (e2e)', () => {
 
   afterAll(async () => {
     await admin.lote.deleteMany({ where: { hubId } });
+    await admin.disponibilidadeFornecedor.deleteMany({
+      where: { fornecedor: { document: { contains: PREFIXO_TESTE } } },
+    });
     await admin.produto.deleteMany({
       where: { fornecedor: { document: { contains: PREFIXO_TESTE } } },
     });
@@ -295,6 +298,222 @@ describe('CatalogoModule (e2e)', () => {
     it('GET /hubs/:id inexistente -> 404 RECURSO_NAO_ENCONTRADO', async () => {
       const resposta = await request(app.getHttpServer())
         .get('/hubs/hub-que-nao-existe')
+        .expect(404);
+      expect(resposta.body.error.code).toBe('RECURSO_NAO_ENCONTRADO');
+    });
+  });
+
+  describe('Disponibilidades (D-B)', () => {
+    async function criarProduto(token: string, nome: string) {
+      const resposta = await request(app.getHttpServer())
+        .post('/produtos')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: nome, unitPrice: 10 })
+        .expect(201);
+      return resposta.body.id as string;
+    }
+
+    it('POST /disponibilidades sem token -> 401 NAO_AUTENTICADO', async () => {
+      const resposta = await request(app.getHttpServer())
+        .post('/disponibilidades')
+        .send({ produtoId: 'x', hubId, quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .expect(401);
+      expect(resposta.body.error.code).toBe('NAO_AUTENTICADO');
+    });
+
+    it('COMPRADOR autenticado nao pode criar disponibilidade -> 403 SEM_PERMISSAO', async () => {
+      const comprador = await cadastrarCompradorEFazerLogin('comprador-disponibilidade');
+      const resposta = await request(app.getHttpServer())
+        .post('/disponibilidades')
+        .set('Authorization', `Bearer ${comprador.accessToken}`)
+        .send({ produtoId: 'x', hubId, quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .expect(403);
+      expect(resposta.body.error.code).toBe('SEM_PERMISSAO');
+    });
+
+    it('fornecedor declara disponibilidade pro proprio produto -> 201, aparece no GET /disponibilidades/:id', async () => {
+      const fornecedor = await cadastrarFornecedorEFazerLogin('disp-a');
+      const produtoId = await criarProduto(fornecedor.accessToken, 'Produto com disponibilidade');
+
+      const criada = await request(app.getHttpServer())
+        .post('/disponibilidades')
+        .set('Authorization', `Bearer ${fornecedor.accessToken}`)
+        .send({ produtoId, hubId, quantidadeMinima: 10, quantidadeMaxima: 100, prazoMaximoEsperaDias: 7 })
+        .expect(201);
+
+      expect(criada.body.fornecedorId).toBe(fornecedor.fornecedorId);
+
+      const buscada = await request(app.getHttpServer())
+        .get(`/disponibilidades/${criada.body.id}`)
+        .set('Authorization', `Bearer ${fornecedor.accessToken}`)
+        .expect(200);
+      expect(buscada.body.quantidadeMaxima).toBe(100);
+    });
+
+    it('fornecedor nao pode declarar disponibilidade pro produto de OUTRO fornecedor -- 403, RLS nao pegaria isso', async () => {
+      const dono = await cadastrarFornecedorEFazerLogin('disp-b-dono');
+      const intruso = await cadastrarFornecedorEFazerLogin('disp-b-intruso');
+      const produtoId = await criarProduto(dono.accessToken, 'Produto do dono (disponibilidade)');
+
+      const resposta = await request(app.getHttpServer())
+        .post('/disponibilidades')
+        .set('Authorization', `Bearer ${intruso.accessToken}`)
+        .send({ produtoId, hubId, quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .expect(403);
+      expect(resposta.body.error.code).toBe('SEM_PERMISSAO');
+    });
+
+    it('criar com produtoId inexistente -> 404 RECURSO_NAO_ENCONTRADO', async () => {
+      const fornecedor = await cadastrarFornecedorEFazerLogin('disp-c');
+      const resposta = await request(app.getHttpServer())
+        .post('/disponibilidades')
+        .set('Authorization', `Bearer ${fornecedor.accessToken}`)
+        .send({
+          produtoId: 'produto-que-nao-existe',
+          hubId,
+          quantidadeMinima: 1,
+          quantidadeMaxima: 10,
+          prazoMaximoEsperaDias: 5,
+        })
+        .expect(404);
+      expect(resposta.body.error.code).toBe('RECURSO_NAO_ENCONTRADO');
+    });
+
+    it('payload invalido (quantidadeMinima > quantidadeMaxima) -> 400 VALIDACAO', async () => {
+      const fornecedor = await cadastrarFornecedorEFazerLogin('disp-d');
+      const produtoId = await criarProduto(fornecedor.accessToken, 'Produto payload invalido');
+      const resposta = await request(app.getHttpServer())
+        .post('/disponibilidades')
+        .set('Authorization', `Bearer ${fornecedor.accessToken}`)
+        .send({ produtoId, hubId, quantidadeMinima: 100, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .expect(400);
+      expect(resposta.body.error.code).toBe('VALIDACAO');
+    });
+
+    it('duas declaracoes para o mesmo produto+hub -> 409 DISPONIBILIDADE_JA_EXISTE', async () => {
+      const fornecedor = await cadastrarFornecedorEFazerLogin('disp-e');
+      const produtoId = await criarProduto(fornecedor.accessToken, 'Produto duplicado');
+      await request(app.getHttpServer())
+        .post('/disponibilidades')
+        .set('Authorization', `Bearer ${fornecedor.accessToken}`)
+        .send({ produtoId, hubId, quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .expect(201);
+
+      const resposta = await request(app.getHttpServer())
+        .post('/disponibilidades')
+        .set('Authorization', `Bearer ${fornecedor.accessToken}`)
+        .send({ produtoId, hubId, quantidadeMinima: 2, quantidadeMaxima: 20, prazoMaximoEsperaDias: 5 })
+        .expect(409);
+      expect(resposta.body.error.code).toBe('DISPONIBILIDADE_JA_EXISTE');
+    });
+
+    it('GET /disponibilidades isola por fornecedor (RLS, nao WHERE)', async () => {
+      const fornecedorF = await cadastrarFornecedorEFazerLogin('disp-f');
+      const fornecedorG = await cadastrarFornecedorEFazerLogin('disp-g');
+      const produtoF = await criarProduto(fornecedorF.accessToken, 'Produto F');
+      const produtoG = await criarProduto(fornecedorG.accessToken, 'Produto G');
+
+      await request(app.getHttpServer())
+        .post('/disponibilidades')
+        .set('Authorization', `Bearer ${fornecedorF.accessToken}`)
+        .send({ produtoId: produtoF, hubId, quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .expect(201);
+      await request(app.getHttpServer())
+        .post('/disponibilidades')
+        .set('Authorization', `Bearer ${fornecedorG.accessToken}`)
+        .send({ produtoId: produtoG, hubId, quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .expect(201);
+
+      const listaF = await request(app.getHttpServer())
+        .get('/disponibilidades')
+        .set('Authorization', `Bearer ${fornecedorF.accessToken}`)
+        .expect(200);
+
+      expect(listaF.body.items.length).toBeGreaterThanOrEqual(1);
+      expect(
+        listaF.body.items.every((d: { fornecedorId: string }) => d.fornecedorId === fornecedorF.fornecedorId),
+      ).toBe(true);
+    });
+
+    it('fornecedor B nao ve nem edita a disponibilidade do fornecedor A via :id -- 404, nao 403 (RLS)', async () => {
+      const fornecedorA = await cadastrarFornecedorEFazerLogin('disp-h-a');
+      const fornecedorB = await cadastrarFornecedorEFazerLogin('disp-h-b');
+      const produtoA = await criarProduto(fornecedorA.accessToken, 'Produto H');
+
+      const criada = await request(app.getHttpServer())
+        .post('/disponibilidades')
+        .set('Authorization', `Bearer ${fornecedorA.accessToken}`)
+        .send({ produtoId: produtoA, hubId, quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .expect(201);
+
+      const buscaB = await request(app.getHttpServer())
+        .get(`/disponibilidades/${criada.body.id}`)
+        .set('Authorization', `Bearer ${fornecedorB.accessToken}`)
+        .expect(404);
+      expect(buscaB.body.error.code).toBe('RECURSO_NAO_ENCONTRADO');
+
+      const patchB = await request(app.getHttpServer())
+        .patch(`/disponibilidades/${criada.body.id}`)
+        .set('Authorization', `Bearer ${fornecedorB.accessToken}`)
+        .send({ quantidadeMaxima: 999 })
+        .expect(404);
+      expect(patchB.body.error.code).toBe('RECURSO_NAO_ENCONTRADO');
+    });
+
+    it('fornecedor atualiza a propria disponibilidade', async () => {
+      const fornecedor = await cadastrarFornecedorEFazerLogin('disp-i');
+      const produtoId = await criarProduto(fornecedor.accessToken, 'Produto I');
+      const criada = await request(app.getHttpServer())
+        .post('/disponibilidades')
+        .set('Authorization', `Bearer ${fornecedor.accessToken}`)
+        .send({ produtoId, hubId, quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .expect(201);
+
+      const atualizada = await request(app.getHttpServer())
+        .patch(`/disponibilidades/${criada.body.id}`)
+        .set('Authorization', `Bearer ${fornecedor.accessToken}`)
+        .send({ quantidadeMaxima: 500 })
+        .expect(200);
+      expect(atualizada.body.quantidadeMaxima).toBe(500);
+    });
+
+    it('CHECK do banco: UPDATE so de quantidadeMinima pra valor maior que a quantidadeMaxima JA SALVA -> 400 VALIDACAO (P2004)', async () => {
+      const fornecedor = await cadastrarFornecedorEFazerLogin('disp-j');
+      const produtoId = await criarProduto(fornecedor.accessToken, 'Produto J');
+      const criada = await request(app.getHttpServer())
+        .post('/disponibilidades')
+        .set('Authorization', `Bearer ${fornecedor.accessToken}`)
+        .send({ produtoId, hubId, quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .expect(201);
+
+      // So quantidadeMinima vem no payload -- o Zod nao tem o que comparar
+      // (so um campo presente), entao quem precisa rejeitar isso e o CHECK
+      // do Postgres contra o quantidadeMaxima=10 ja salvo.
+      const resposta = await request(app.getHttpServer())
+        .patch(`/disponibilidades/${criada.body.id}`)
+        .set('Authorization', `Bearer ${fornecedor.accessToken}`)
+        .send({ quantidadeMinima: 999 })
+        .expect(400);
+      expect(resposta.body.error.code).toBe('VALIDACAO');
+    });
+
+    it('fornecedor remove a propria disponibilidade -- 204, e some do GET', async () => {
+      const fornecedor = await cadastrarFornecedorEFazerLogin('disp-k');
+      const produtoId = await criarProduto(fornecedor.accessToken, 'Produto K');
+      const criada = await request(app.getHttpServer())
+        .post('/disponibilidades')
+        .set('Authorization', `Bearer ${fornecedor.accessToken}`)
+        .send({ produtoId, hubId, quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .delete(`/disponibilidades/${criada.body.id}`)
+        .set('Authorization', `Bearer ${fornecedor.accessToken}`)
+        .expect(204);
+
+      const resposta = await request(app.getHttpServer())
+        .get(`/disponibilidades/${criada.body.id}`)
+        .set('Authorization', `Bearer ${fornecedor.accessToken}`)
         .expect(404);
       expect(resposta.body.error.code).toBe('RECURSO_NAO_ENCONTRADO');
     });
