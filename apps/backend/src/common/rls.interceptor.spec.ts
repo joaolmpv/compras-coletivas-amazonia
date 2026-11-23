@@ -30,8 +30,17 @@ describe('RlsInterceptor', () => {
     dbContext = new DbContextService();
   });
 
-  it('usa app_comprador por padrao quando nenhum @DbRoleMeta foi declarado', async () => {
+  it('lanca erro quando nenhum @DbRoleMeta foi declarado (sem default implicito desde 23/11/2026)', () => {
     const reflector = { get: jest.fn().mockReturnValue(undefined) } as unknown as Reflector;
+    const interceptor = new RlsInterceptor(prisma, reflector, dbContext);
+    const next: CallHandler = { handle: () => of('nunca chega aqui') };
+
+    expect(() => interceptor.intercept(buildContext({}), next)).toThrow(/sem @DbRoleMeta/);
+    expect(executeRawUnsafe).not.toHaveBeenCalled();
+  });
+
+  it('rota publica com @DbRoleMeta app_comprador explicito e sem principal -- passa sem checar papel', async () => {
+    const reflector = { get: jest.fn().mockReturnValue('app_comprador') } as unknown as Reflector;
     const interceptor = new RlsInterceptor(prisma, reflector, dbContext);
     const next: CallHandler = { handle: () => of('resultado') };
 
@@ -42,7 +51,7 @@ describe('RlsInterceptor', () => {
   });
 
   it('seta app.comprador_id quando o role e app_comprador e ha principal autenticado', async () => {
-    const reflector = { get: jest.fn().mockReturnValue(undefined) } as unknown as Reflector;
+    const reflector = { get: jest.fn().mockReturnValue('app_comprador') } as unknown as Reflector;
     const interceptor = new RlsInterceptor(prisma, reflector, dbContext);
     const next: CallHandler = { handle: () => of('ok') };
     const request = { principal: { sub: 'u1', role: 'COMPRADOR', perfilId: 'comp-1' } };
@@ -50,6 +59,42 @@ describe('RlsInterceptor', () => {
     await firstValueFrom(interceptor.intercept(buildContext(request), next));
 
     expect(executeRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejeita com SEM_PERMISSAO quando o papel do principal nao autoriza o role da rota', () => {
+    const reflector = { get: jest.fn().mockReturnValue('app_fornecedor') } as unknown as Reflector;
+    const interceptor = new RlsInterceptor(prisma, reflector, dbContext);
+    const next: CallHandler = { handle: () => of('nunca chega aqui') };
+    const request = { principal: { sub: 'u1', role: 'COMPRADOR', perfilId: 'comp-1' } };
+
+    expect(() => interceptor.intercept(buildContext(request), next)).toThrow();
+    try {
+      interceptor.intercept(buildContext(request), next);
+    } catch (err: any) {
+      expect(err.code).toBe('SEM_PERMISSAO');
+    }
+    expect(executeRawUnsafe).not.toHaveBeenCalled();
+  });
+
+  it('app_admin aceita principal ADMIN', async () => {
+    const reflector = { get: jest.fn().mockReturnValue('app_admin') } as unknown as Reflector;
+    const interceptor = new RlsInterceptor(prisma, reflector, dbContext);
+    const next: CallHandler = { handle: () => of('ok') };
+    const request = { principal: { sub: 'u1', role: 'ADMIN', perfilId: null } };
+
+    const resultado = await firstValueFrom(interceptor.intercept(buildContext(request), next));
+
+    expect(resultado).toBe('ok');
+    expect(executeRawUnsafe).toHaveBeenCalledWith('SET LOCAL ROLE app_admin');
+  });
+
+  it('app_admin rejeita principal COMPRADOR', () => {
+    const reflector = { get: jest.fn().mockReturnValue('app_admin') } as unknown as Reflector;
+    const interceptor = new RlsInterceptor(prisma, reflector, dbContext);
+    const next: CallHandler = { handle: () => of('nunca chega aqui') };
+    const request = { principal: { sub: 'u1', role: 'COMPRADOR', perfilId: 'comp-1' } };
+
+    expect(() => interceptor.intercept(buildContext(request), next)).toThrow();
   });
 
   it('NAO seta app.comprador_id quando o role e app_auth (metadata explicito)', async () => {

@@ -13,7 +13,10 @@ import { CurrentPrincipal, type Principal } from '../common/principal';
 export class FornecedoresController {
   constructor(@Inject(FornecedoresService) private readonly fornecedores: FornecedoresService) {}
 
+  // Publico -- @DbRoleMeta obrigatorio mesmo assim (ver nota em
+  // ProdutosController).
   @Get()
+  @DbRoleMeta('app_comprador')
   listar(@Query(new ZodValidationPipe(PaginacaoQuerySchema)) query: PaginacaoQuery) {
     return this.fornecedores.listar(query);
   }
@@ -34,6 +37,7 @@ export class FornecedoresController {
   // parametrizadas no mesmo controller, pra evitar surpresa se um GET /me
   // for adicionado no futuro.
   @Get(':id')
+  @DbRoleMeta('app_comprador')
   buscarPorId(@Param('id') id: string) {
     return this.fornecedores.buscarPorId(id);
   }

@@ -751,6 +751,56 @@ $$;
 RESET app.fornecedor_id;
 RESET ROLE;
 
+-- --- Caso 15: limites exatos de privilegio do app_admin (23/11/2026) -------
+-- app_admin nao tem identidade por linha (USING(true) nas duas politicas
+-- -- ve/transiciona qualquer Lote), mas o GRANT por coluna em Lote e a
+-- ausencia TOTAL de GRANT de escrita em PedidoLote sao os limites reais.
+
+SET LOCAL ROLE app_admin;
+
+DO $$
+DECLARE
+  cnt int;
+  bloqueado boolean;
+BEGIN
+  -- 15a: SELECT em Lote funciona (USING(true), sem identidade propria).
+  SELECT count(*) INTO cnt FROM "Lote" WHERE id = 'test_lote_1';
+  PERFORM pg_temp.registrar('caso 15a: app_admin SELECT em Lote funciona', cnt = 1);
+
+  -- 15b: UPDATE nas colunas concedidas (status, motivoCancelamento) funciona.
+  UPDATE "Lote" SET status = 'CANCELADO', "motivoCancelamento" = 'ADMIN_OVERRIDE'
+    WHERE id = 'test_lote_1';
+  SELECT count(*) INTO cnt FROM "Lote"
+    WHERE id = 'test_lote_1' AND status = 'CANCELADO' AND "motivoCancelamento" = 'ADMIN_OVERRIDE';
+  PERFORM pg_temp.registrar('caso 15b: app_admin UPDATE status/motivoCancelamento em Lote funciona', cnt = 1);
+
+  -- 15c: UPDATE numa coluna NAO concedida (totalCost) falha -- GRANT UPDATE
+  -- de Lote pra app_admin e so ("status", "motivoCancelamento").
+  bloqueado := false;
+  BEGIN
+    UPDATE "Lote" SET "totalCost" = 999.99 WHERE id = 'test_lote_1';
+  EXCEPTION WHEN insufficient_privilege THEN
+    bloqueado := true;
+  END;
+  PERFORM pg_temp.registrar('caso 15c: app_admin UPDATE em totalCost (coluna nao concedida) bloqueado', bloqueado);
+
+  -- 15d: SELECT em PedidoLote funciona.
+  SELECT count(*) INTO cnt FROM "PedidoLote" WHERE id = 'test_pedido_a';
+  PERFORM pg_temp.registrar('caso 15d: app_admin SELECT em PedidoLote funciona', cnt = 1);
+
+  -- 15e: UPDATE em PedidoLote falha -- nenhum GRANT de escrita concedido.
+  bloqueado := false;
+  BEGIN
+    UPDATE "PedidoLote" SET quantidade = 999 WHERE id = 'test_pedido_a';
+  EXCEPTION WHEN insufficient_privilege THEN
+    bloqueado := true;
+  END;
+  PERFORM pg_temp.registrar('caso 15e: app_admin UPDATE em PedidoLote bloqueado (sem GRANT de escrita)', bloqueado);
+END
+$$;
+
+RESET ROLE;
+
 -- --- Relatorio final e verificacao ------------------------------------------
 
 SELECT id, caso, status, detalhe FROM resultados_teste ORDER BY id;

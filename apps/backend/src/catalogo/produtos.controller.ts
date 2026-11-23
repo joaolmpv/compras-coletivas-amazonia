@@ -32,15 +32,19 @@ import { CurrentPrincipal, type Principal } from '../common/principal';
 export class ProdutosController {
   constructor(@Inject(ProdutosService) private readonly produtos: ProdutosService) {}
 
-  // Publico -- sem @DbRoleMeta (role padrao app_comprador do interceptor) e
-  // sem guard de autenticacao. produto_select_publico (RLS) nao restringe
-  // leitura a nenhum role especifico.
+  // Publico -- sem guard de autenticacao, mas @DbRoleMeta e OBRIGATORIO
+  // mesmo assim desde 23/11/2026 (nao ha mais default implicito no
+  // interceptor). produto_select_publico (RLS) nao restringe leitura a
+  // nenhum role especifico -- app_comprador e so o role "visivel" que
+  // qualquer requisicao sem identidade usa.
   @Get()
+  @DbRoleMeta('app_comprador')
   listar(@Query(new ZodValidationPipe(ListarProdutosQuerySchema)) query: ListarProdutosQuery) {
     return this.produtos.listar(query);
   }
 
   @Get(':id')
+  @DbRoleMeta('app_comprador')
   buscarPorId(@Param('id') id: string) {
     return this.produtos.buscarPorId(id);
   }

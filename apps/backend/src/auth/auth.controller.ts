@@ -53,11 +53,17 @@ export class AuthController {
     return { ok: true };
   }
 
-  // Sem @DbRoleMeta -- usa o padrao do interceptor (app_comprador), que e
+  // @DbRoleMeta('app_comprador') agora EXPLICITO (23/11/2026 -- nao ha
+  // mais default implicito no interceptor), mas o papel continua sendo
   // exatamente o que este endpoint precisa provar: login -> token -> RLS
-  // validado na mesma chamada.
+  // validado na mesma chamada. Efeito colateral bom da checagem nova de
+  // papel-vs-role no interceptor: FORNECEDOR/ADMIN chamando esta rota
+  // agora recebe 403 SEM_PERMISSAO upfront, em vez de cair num
+  // RECURSO_NAO_ENCONTRADO confuso tentando ler Comprador com o proprio
+  // fornecedorId/sem perfil.
   @Get('me')
   @UseGuards(JwtAuthGuard)
+  @DbRoleMeta('app_comprador')
   me(@CurrentPrincipal() principal: Principal) {
     return this.auth.meComprador(principal.perfilId!);
   }
