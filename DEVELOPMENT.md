@@ -106,11 +106,11 @@ O índice também ordena a notificação de fornecedores no casamento (D-B).
 |---|---|---|
 | **OE1 v1/v2/v3** | Experimentos do otimizador | ✅ Concluída |
 | **OE1 v4** | Limiar adaptativo (D-A) + análise estatística (absorve a antiga v3.1) | ⬜ Pendente |
-| **Design backend** | `docs/design-backend.md` (12 decisões + seção 13 a criar com D-A/D-B) | ✅ / 🔄 seção 13 |
+| **Design backend** | `docs/design-backend.md` (12 decisões + seção 13 com D-A/D-B) | ✅ Concluída |
 | **E1** | Migrations, RLS, roles, testes de isolamento | ✅ Concluída (mergeada) |
-| **E2** | Identidade e autenticação | 🔄 Próxima |
-| **E3** | Catálogo + `DisponibilidadeFornecedor` | ⬜ Pendente |
-| **E4** | `IntencaoCompra`, lote `CANDIDATO`, confirmação do fornecedor, adesão, rateio, pagamento | ⬜ Pendente |
+| **E2** | Identidade e autenticação | ✅ Concluída (branch `feature/be-e2-auth`, aguardando aprovação/merge) |
+| **E3** | Catálogo + `DisponibilidadeFornecedor` | ✅ Concluída (branch `feature/be-e3-catalogo`) |
+| **E4** | `IntencaoCompra`, lote `CANDIDATO`, confirmação do fornecedor, adesão, rateio, pagamento | 🔄 Em andamento (branch `feature/be-e4-lotes` — avaliação verificada feita; falta `IntencaoCompra`, estado `CANDIDATO`, confirmação do fornecedor, adesão/rateio, breakdown, pagamento) |
 | **E5** | Otimizador por fila + job de casamento + fechamento adaptativo | ⬜ Pendente |
 | **E6** | Auditoria com hash encadeado | ⬜ Pendente |
 | **E7** | SSE e rate limiting | ⬜ Pendente |
@@ -131,7 +131,7 @@ Cada etapa: branch própria a partir da `dev`, commits locais, parar ao final.
 ### E1 — Migrations e RLS ✅
 
 **Entregue:** 7 entidades centrais + 5 de suporte; RLS multi-ator; roles
-`app_backend` (NOINHERIT), `app_comprador`, `app_service`, `app_definer`, `app_auth`;
+`app_backend` (NOINHERIT), `app_comprador`, `app_service`, `app_definer`, `app_auth`, `app_fornecedor` (criado na E3, simétrico a `app_comprador` — identidade de fornecedor autenticado);
 `fn_breakdown_lote` (SECURITY DEFINER, fail-closed, restrita a participantes);
 GRANT por coluna em `PedidoLote` e `Avaliacao`; `LogAuditoria` append-only com
 trigger de TRUNCATE; `npm run test:rls` com 38 casos e código de saída correto.
@@ -241,8 +241,9 @@ com dedup; avaliação 10/h/usuário; 3 conexões SSE/usuário.
 ## 5. Frontend — etapas detalhadas
 
 Next.js com SSR (crítico: conexões de baixa largura de banda na região Norte).
-Contrato de tipos compartilhado em `packages/shared-types`. Pode começar com mocks
-assim que a E2 definir o contrato.
+Contrato de tipos gerado a partir do OpenAPI do NestJS (`@nestjs/swagger` +
+`openapi-typescript`), não um pacote `packages/shared-types` mantido à mão.
+Pode começar com mocks assim que a E2 definir o contrato.
 
 ### F1 — Comprador
 
@@ -414,7 +415,25 @@ resultados da v4; testes de concorrência da E4; teste de usabilidade (OE3);
 correlação e robustez do OE4.
 
 Novos itens que surgirem durante o desenvolvimento entram aqui, para a próxima rodada:
-- (nenhum até o momento)
+- **Avaliação verificada (E4):** vínculo obrigatório com o `PedidoLote` (FK
+  única); validação de elegibilidade estrutural no banco (trigger
+  `fn_avaliacao_requer_entregue`, não só checagem na aplicação); caso de
+  falha do fornecedor (`FORNECEDOR_NAO_DESPACHOU`) libera avaliação mesmo
+  com o lote `CANCELADO` — recusar ou demorar pra confirmar (lote ainda
+  `CANDIDATO`) não libera, entram no OE4 pela métrica de tempo de resposta.
+- **Novo role `app_fornecedor` (E3):** identidade de fornecedor autenticado
+  no Postgres, simétrica a `app_comprador` — não estava no desenho
+  original de 5 roles da E1.
+- **Bugs reais encontrados pelos próprios testes:**
+  - E2: `app_auth` sem `SELECT` em `Comprador`/`Fornecedor`, exigido pelo
+    `RETURNING` implícito do `.create()` do Prisma mesmo em operação só de
+    escrita; revogação de família de refresh token sendo desfeita pelo
+    `ROLLBACK` da própria transação da requisição (corrigida com uma
+    transação independente).
+  - E3: RLS em `Fornecedor` sem política de `INSERT` quebrando o cadastro
+    feito por `app_auth`; `AuthModule` não reexportava `JwtModule`, e por
+    isso `JwtAuthGuard` não resolvia sua dependência (`JwtService`) fora
+    do próprio módulo.
 
 ---
 
