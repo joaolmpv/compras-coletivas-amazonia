@@ -99,7 +99,7 @@ export class DisponibilidadesService {
       }
     }
     // CHECK DisponibilidadeFornecedor_min_le_max -- so dispara aqui num
-    // UPDATE parcial que deixa quantidadeMinimaM3 > quantidadeMaximaM3 contra
+    // UPDATE parcial que deixa quantidadeMinima > quantidadeMaxima contra
     // o valor JA SALVO do outro campo (ver nota no DTO). Descoberto pelo
     // teste e2e: o Postgres reporta isso como violacao de CHECK (codigo
     // 23514), que o Prisma NAO embrulha como PrismaClientKnownRequestError
@@ -112,7 +112,7 @@ export class DisponibilidadesService {
     ) {
       return new AppException(
         'VALIDACAO',
-        'quantidadeMinimaM3 deve ser menor ou igual a quantidadeMaximaM3',
+        'quantidadeMinima deve ser menor ou igual a quantidadeMaxima',
         HttpStatus.BAD_REQUEST,
       );
     }

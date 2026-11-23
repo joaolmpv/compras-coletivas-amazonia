@@ -28,7 +28,13 @@ describe('ProdutosController', () => {
 
   it('criar usa o perfilId do principal (fornecedorId), nao um campo do payload', async () => {
     const principal = { sub: 'u1', role: 'FORNECEDOR' as const, perfilId: 'f1' };
-    const dto = { name: 'Produto', unitPrice: 10 };
+    const dto = {
+      name: 'Produto',
+      precoPorUnidade: 10,
+      unidadeComercial: 'saco 50kg',
+      pesoPorUnidadeKg: 50,
+      volumePorUnidadeM3: 0.04,
+    };
     await controller.criar(principal, dto);
     expect(produtos.criar).toHaveBeenCalledWith('f1', dto);
   });

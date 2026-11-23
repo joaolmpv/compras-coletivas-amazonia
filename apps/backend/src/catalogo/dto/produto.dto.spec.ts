@@ -1,19 +1,55 @@
 import { CriarProdutoSchema, AtualizarProdutoSchema, ListarProdutosQuerySchema } from './produto.dto';
 
+const unidadesComerciais = {
+  unidadeComercial: 'saco 50kg',
+  pesoPorUnidadeKg: 50,
+  volumePorUnidadeM3: 0.04,
+};
+
 describe('CriarProdutoSchema', () => {
   it('aceita um payload valido', () => {
-    expect(CriarProdutoSchema.parse({ name: 'Produto', unitPrice: 10 })).toEqual({
+    expect(
+      CriarProdutoSchema.parse({ name: 'Produto', precoPorUnidade: 10, ...unidadesComerciais }),
+    ).toEqual({
       name: 'Produto',
-      unitPrice: 10,
+      precoPorUnidade: 10,
+      ...unidadesComerciais,
     });
   });
 
-  it('rejeita unitPrice nao positivo', () => {
-    expect(() => CriarProdutoSchema.parse({ name: 'Produto', unitPrice: 0 })).toThrow();
+  it('rejeita precoPorUnidade nao positivo', () => {
+    expect(() =>
+      CriarProdutoSchema.parse({ name: 'Produto', precoPorUnidade: 0, ...unidadesComerciais }),
+    ).toThrow();
   });
 
   it('rejeita name vazio', () => {
-    expect(() => CriarProdutoSchema.parse({ name: '', unitPrice: 10 })).toThrow();
+    expect(() =>
+      CriarProdutoSchema.parse({ name: '', precoPorUnidade: 10, ...unidadesComerciais }),
+    ).toThrow();
+  });
+
+  it('rejeita sem unidadeComercial/pesoPorUnidadeKg/volumePorUnidadeM3', () => {
+    expect(() => CriarProdutoSchema.parse({ name: 'Produto', precoPorUnidade: 10 })).toThrow();
+  });
+
+  it('rejeita pesoPorUnidadeKg ou volumePorUnidadeM3 nao positivo', () => {
+    expect(() =>
+      CriarProdutoSchema.parse({
+        name: 'Produto',
+        precoPorUnidade: 10,
+        ...unidadesComerciais,
+        pesoPorUnidadeKg: 0,
+      }),
+    ).toThrow();
+    expect(() =>
+      CriarProdutoSchema.parse({
+        name: 'Produto',
+        precoPorUnidade: 10,
+        ...unidadesComerciais,
+        volumePorUnidadeM3: -1,
+      }),
+    ).toThrow();
   });
 });
 
@@ -26,8 +62,8 @@ describe('AtualizarProdutoSchema', () => {
     expect(() => AtualizarProdutoSchema.parse({})).toThrow();
   });
 
-  it('rejeita unitPrice nao positivo quando informado', () => {
-    expect(() => AtualizarProdutoSchema.parse({ unitPrice: -1 })).toThrow();
+  it('rejeita precoPorUnidade nao positivo quando informado', () => {
+    expect(() => AtualizarProdutoSchema.parse({ precoPorUnidade: -1 })).toThrow();
   });
 });
 

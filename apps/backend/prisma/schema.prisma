@@ -134,7 +134,18 @@ model Produto {
   id                            String                      @id @default(cuid())
   name                          String
   description                   String?
-  unitPrice                     Float
+  // Preco por unidadeComercial (ex: preco do "saco 50kg", nao do kg).
+  precoPorUnidade               Float
+  // Unidades comerciais (decisao 23/11/2026): fornecedor e comprador
+  // sempre expressam quantidade em unidadeComercial -- nunca direto em
+  // m3/kg. O sistema converte nos dois pontos que precisam de unidade
+  // fisica: rateio (m3, via volumePorUnidadeM3 -- ver DisponibilidadeFornecedor.
+  // quantidadeMinima/Maxima e PedidoLote.quantidade) e custo de frete do
+  // otimizador (kg, via pesoPorUnidadeKg -- peso cubado = max(pesoReal,
+  // volumeM3 x fator_cubagem), calculo que fica no microsservico, nao aqui).
+  unidadeComercial              String // ex: "saco 50kg"
+  pesoPorUnidadeKg              Float // CHECK > 0 na migration
+  volumePorUnidadeM3            Float // CHECK > 0 na migration
   fornecedorId                  String
   fornecedor                    Fornecedor                  @relation(fields: [fornecedorId], references: [id])
   lotes                         Lote[]
@@ -196,12 +207,16 @@ model DisponibilidadeFornecedor {
   fornecedor            Fornecedor   @relation(fields: [fornecedorId], references: [id])
   hubId                 String
   hub                   HubLogistico @relation(fields: [hubId], references: [id])
-  // Sufixo M3: mesma unidade de PedidoLote.volumeM3/Lote.totalVolumeM3 --
-  // direto comparavel/convertivel no calculo de rateio, sem fator de
-  // conversao. Antes (quantidadeMinima/quantidadeMaxima) a unidade nao
-  // era explicita -- renomeado na revisao.
-  quantidadeMinimaM3    Float // minimo de despacho -- CHECK <= quantidadeMaximaM3 na migration
-  quantidadeMaximaM3    Float // maximo disponivel
+  // Decisao 23/11/2026 (unidades comerciais): quantidade declarada em
+  // unidadeComercial do PRODUTO (Produto.unidadeComercial), nao em m3 --
+  // sufixo M3 (nome anterior, migration 20261112150000) virou errado
+  // quando o fornecedor passou a declarar quantidade em unidades
+  // comerciais ("20 sacos"), nao em m3 direto. m3 e CALCULADO (quantidade
+  // x produto.volumePorUnidadeM3) sempre no momento do uso, nunca
+  // armazenado aqui -- evita ficar desatualizado se volumePorUnidadeM3 do
+  // produto mudar depois.
+  quantidadeMinima      Float // minimo de despacho -- CHECK <= quantidadeMaxima na migration
+  quantidadeMaxima      Float // maximo disponivel
   prazoMaximoEsperaDias Int
   vigenciaInicio        DateTime     @default(now())
   // NULL = vigente agora. A unicidade "uma vigente por produto x hub" e
@@ -237,7 +252,13 @@ model PedidoLote {
   lote        Lote       @relation(fields: [loteId], references: [id])
   compradorId String
   comprador   Comprador  @relation(fields: [compradorId], references: [id])
-  volumeM3    Float
+  // Decisao 23/11/2026 (unidades comerciais): quantidade em
+  // unidadeComercial do produto do lote (Produto.unidadeComercial), nao
+  // mais m3 direto (nome anterior era volumeM3) -- o comprador declara
+  // "quero 10 sacos", nao "quero 2 m3". m3 (pro rateio/fn_breakdown_lote)
+  // e calculado via produto.volumePorUnidadeM3, nunca armazenado aqui.
+  quantidade  Float
+  // costShare continua em R$ -- nao afetado pela mudanca de unidade.
   // Valor rateado do frete deste lote proporcional ao volume do comprador --
   // calculado de forma transacional no fechamento do lote (ver OE2 no README).
   // Nullable, sem DEFAULT: so e preenchido pelo backend (app_service) no

@@ -83,11 +83,18 @@ describe('ProdutosService', () => {
     it('associa o produto ao fornecedorId informado (do JWT, nao do payload)', async () => {
       tx.produto.create.mockResolvedValue({ id: 'p1', fornecedorId: 'f1' });
 
-      const resultado = await service.criar('f1', { name: 'Caixa de parafusos', unitPrice: 10 });
+      const dto = {
+        name: 'Caixa de parafusos',
+        precoPorUnidade: 10,
+        unidadeComercial: 'saco 50kg',
+        pesoPorUnidadeKg: 50,
+        volumePorUnidadeM3: 0.04,
+      };
+      const resultado = await service.criar('f1', dto);
 
       expect(resultado).toEqual({ id: 'p1', fornecedorId: 'f1' });
       expect(tx.produto.create).toHaveBeenCalledWith({
-        data: { name: 'Caixa de parafusos', unitPrice: 10, fornecedorId: 'f1' },
+        data: { ...dto, fornecedorId: 'f1' },
       });
     });
   });

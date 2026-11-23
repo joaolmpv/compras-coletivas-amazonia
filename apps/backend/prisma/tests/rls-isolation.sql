@@ -74,10 +74,10 @@ INSERT INTO "Fornecedor" (id, name, document, "createdAt") VALUES
 INSERT INTO "Fornecedor" (id, name, document, "createdAt") VALUES
   ('test_fornecedor_2', 'Fornecedor Teste RLS 2 (errado de proposito)', 'RLS-TEST-DOC-F2', now());
 
-INSERT INTO "Produto" (id, name, "unitPrice", "fornecedorId", "createdAt") VALUES
-  ('test_produto_1', 'Produto Teste RLS', 10.0, 'test_fornecedor_1', now()),
+INSERT INTO "Produto" (id, name, "precoPorUnidade", "unidadeComercial", "pesoPorUnidadeKg", "volumePorUnidadeM3", "fornecedorId", "createdAt") VALUES
+  ('test_produto_1', 'Produto Teste RLS', 10.0, 'saco 50kg', 50, 0.04, 'test_fornecedor_1', now()),
   -- Produto proprio do fornecedor 2 -- caso 14 (isolamento fornecedor A vs B).
-  ('test_produto_2', 'Produto Teste RLS (fornecedor 2)', 20.0, 'test_fornecedor_2', now());
+  ('test_produto_2', 'Produto Teste RLS (fornecedor 2)', 20.0, 'saco 50kg', 50, 0.04, 'test_fornecedor_2', now());
 
 INSERT INTO "HubLogistico" (id, name, city, "fixedDispatchCost", "variableCostPerM3", "capacityM3") VALUES
   ('test_hub_1', 'Hub Teste RLS', 'Manaus - AM', 1800, 95, 40),
@@ -86,7 +86,7 @@ INSERT INTO "HubLogistico" (id, name, city, "fixedDispatchCost", "variableCostPe
   -- isolando a causa da rejeicao: so a politica RLS, nao o unique.
   ('test_hub_2', 'Hub Teste RLS 2', 'Belem - PA', 1500, 80, 30);
 
-INSERT INTO "DisponibilidadeFornecedor" (id, "produtoId", "fornecedorId", "hubId", "quantidadeMinimaM3", "quantidadeMaximaM3", "prazoMaximoEsperaDias", "createdAt") VALUES
+INSERT INTO "DisponibilidadeFornecedor" (id, "produtoId", "fornecedorId", "hubId", "quantidadeMinima", "quantidadeMaxima", "prazoMaximoEsperaDias", "createdAt") VALUES
   ('test_disp_fornecedor_2', 'test_produto_2', 'test_fornecedor_2', 'test_hub_1', 1, 10, 5, now());
 
 INSERT INTO "Lote" (id, "produtoId", "hubId", status, "totalVolumeM3", "createdAt") VALUES
@@ -106,7 +106,7 @@ INSERT INTO "Lote" (id, "produtoId", "hubId", status, "totalVolumeM3", "createdA
   ('test_lote_entregue_d', 'test_produto_1', 'test_hub_1', 'ENTREGUE', 1, now()),
   ('test_lote_entregue_e', 'test_produto_1', 'test_hub_1', 'ENTREGUE', 1, now());
 
-INSERT INTO "PedidoLote" (id, "loteId", "compradorId", "volumeM3", "costShare") VALUES
+INSERT INTO "PedidoLote" (id, "loteId", "compradorId", "quantidade", "costShare") VALUES
   ('test_pedido_a', 'test_lote_1', 'test_comprador_a', 5.0, 123.45),
   ('test_pedido_b', 'test_lote_1', 'test_comprador_b', 7.0, 234.56),
   ('test_pedido_entregue_a', 'test_lote_entregue_a', 'test_comprador_a', 1.0, 10.0),
@@ -184,7 +184,7 @@ DECLARE
   falhou_como_esperado boolean := false;
 BEGIN
   BEGIN
-    INSERT INTO "PedidoLote" (id, "loteId", "compradorId", "volumeM3", "costShare")
+    INSERT INTO "PedidoLote" (id, "loteId", "compradorId", "quantidade", "costShare")
     VALUES ('test_pedido_coluna_bloqueado', 'test_lote_2', 'test_comprador_a', 3.0, 999.99);
   EXCEPTION WHEN insufficient_privilege THEN
     falhou_como_esperado := true;
@@ -195,7 +195,7 @@ $$;
 
 DO $$
 BEGIN
-  INSERT INTO "PedidoLote" (id, "loteId", "compradorId", "volumeM3")
+  INSERT INTO "PedidoLote" (id, "loteId", "compradorId", "quantidade")
   VALUES ('test_pedido_coluna_ok', 'test_lote_2', 'test_comprador_a', 3.0);
   PERFORM pg_temp.registrar('caso 3b: app_comprador insere sem costShare', true);
 END
@@ -206,7 +206,7 @@ DECLARE
   falhou_como_esperado boolean := false;
 BEGIN
   BEGIN
-    UPDATE "PedidoLote" SET "volumeM3" = 999 WHERE id = 'test_pedido_coluna_ok';
+    UPDATE "PedidoLote" SET "quantidade" = 999 WHERE id = 'test_pedido_coluna_ok';
   EXCEPTION WHEN insufficient_privilege THEN
     falhou_como_esperado := true;
   END;
@@ -255,7 +255,7 @@ BEGIN
   FOR linha IN SELECT * FROM fn_breakdown_lote('test_lote_1') LOOP
     total_linhas := total_linhas + 1;
     IF linha.comprador_id = 'test_comprador_a'
-       AND linha.volume_m3 = 5.0 AND linha.cost_share = 123.45 THEN
+       AND linha.quantidade = 5.0 AND linha.cost_share = 123.45 THEN
       minha_linha_ok := true;
     END IF;
     IF linha.comprador_id = 'test_comprador_b' THEN
@@ -285,7 +285,7 @@ DECLARE
 BEGIN
   BEGIN
     CREATE TEMP TABLE "PedidoLote" (
-      id text, "loteId" text, "compradorId" text, "volumeM3" float8, "costShare" float8
+      id text, "loteId" text, "compradorId" text, "quantidade" float8, "costShare" float8
     );
     INSERT INTO "PedidoLote" VALUES ('fake', 'test_lote_1', 'ATACANTE', 9999, 9999);
   EXCEPTION WHEN insufficient_privilege THEN
@@ -298,10 +298,10 @@ BEGIN
   ELSE
     FOR linha IN SELECT * FROM fn_breakdown_lote('test_lote_1') LOOP
       total_linhas := total_linhas + 1;
-      IF linha.comprador_id = 'ATACANTE' OR linha.volume_m3 = 9999 THEN
+      IF linha.comprador_id = 'ATACANTE' OR linha.quantidade = 9999 THEN
         vazou_fake := true;
       END IF;
-      IF linha.comprador_id = 'test_comprador_a' AND linha.volume_m3 = 5.0 THEN
+      IF linha.comprador_id = 'test_comprador_a' AND linha.quantidade = 5.0 THEN
         minha_linha_ok := true;
       END IF;
     END LOOP;
@@ -571,7 +571,7 @@ INSERT INTO "Lote" (id, "produtoId", "hubId", status, "totalVolumeM3", "motivoCa
   ('test_lote_cancel_recusou', 'test_produto_1', 'test_hub_1', 'CANCELADO', 0, 'FORNECEDOR_RECUSOU', now()),
   ('test_lote_cancel_exp', 'test_produto_1', 'test_hub_1', 'CANCELADO', 0, 'EXPIRACAO_SEM_CONFIRMACAO', now());
 
-INSERT INTO "PedidoLote" (id, "loteId", "compradorId", "volumeM3") VALUES
+INSERT INTO "PedidoLote" (id, "loteId", "compradorId", "quantidade") VALUES
   ('test_pedido_cancel_nd', 'test_lote_cancel_nd', 'test_comprador_a', 1.0),
   ('test_pedido_cancel_recusou', 'test_lote_cancel_recusou', 'test_comprador_a', 1.0),
   ('test_pedido_cancel_exp', 'test_lote_cancel_exp', 'test_comprador_a', 1.0);
@@ -620,8 +620,8 @@ BEGIN
   -- (public."PedidoLote" etc.) e nao tivesse search_path explicito, isso
   -- enganaria a checagem -- mesma defesa de fn_breakdown_lote (migration
   -- 20261029183122).
-  CREATE TEMP TABLE "PedidoLote" (id text, "loteId" text, "compradorId" text, "volumeM3" float8);
-  INSERT INTO pg_temp."PedidoLote" (id, "loteId", "compradorId", "volumeM3")
+  CREATE TEMP TABLE "PedidoLote" (id text, "loteId" text, "compradorId" text, "quantidade" float8);
+  INSERT INTO pg_temp."PedidoLote" (id, "loteId", "compradorId", "quantidade")
     VALUES ('test_pedido_a', 'fake_lote_entregue', 'test_comprador_a', 5);
 
   CREATE TEMP TABLE "Lote" (id text, status text, "motivoCancelamento" text, "produtoId" text);
@@ -739,7 +739,7 @@ BEGIN
   -- na RLS, nao no unique.
   BEGIN
     INSERT INTO "DisponibilidadeFornecedor"
-      (id, "produtoId", "fornecedorId", "hubId", "quantidadeMinimaM3", "quantidadeMaximaM3", "prazoMaximoEsperaDias")
+      (id, "produtoId", "fornecedorId", "hubId", "quantidadeMinima", "quantidadeMaxima", "prazoMaximoEsperaDias")
     VALUES ('test_disp_forjada', 'test_produto_2', 'test_fornecedor_2', 'test_hub_2', 1, 10, 5);
   EXCEPTION WHEN insufficient_privilege OR OTHERS THEN
     bloqueado := true;
