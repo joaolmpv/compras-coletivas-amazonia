@@ -71,14 +71,23 @@ INSERT INTO "Comprador" (id, name, document, email, "createdAt") VALUES
 INSERT INTO "Fornecedor" (id, name, document, "createdAt") VALUES
   ('test_fornecedor_1', 'Fornecedor Teste RLS', 'RLS-TEST-DOC-F', now());
 
-INSERT INTO "Produto" (id, name, "unitPrice", "fornecedorId", "createdAt") VALUES
-  ('test_produto_1', 'Produto Teste RLS', 10.0, 'test_fornecedor_1', now());
-
-INSERT INTO "HubLogistico" (id, name, city, "fixedDispatchCost", "variableCostPerM3", "capacityM3") VALUES
-  ('test_hub_1', 'Hub Teste RLS', 'Manaus - AM', 1800, 95, 40);
-
 INSERT INTO "Fornecedor" (id, name, document, "createdAt") VALUES
   ('test_fornecedor_2', 'Fornecedor Teste RLS 2 (errado de proposito)', 'RLS-TEST-DOC-F2', now());
+
+INSERT INTO "Produto" (id, name, "unitPrice", "fornecedorId", "createdAt") VALUES
+  ('test_produto_1', 'Produto Teste RLS', 10.0, 'test_fornecedor_1', now()),
+  -- Produto proprio do fornecedor 2 -- caso 14 (isolamento fornecedor A vs B).
+  ('test_produto_2', 'Produto Teste RLS (fornecedor 2)', 20.0, 'test_fornecedor_2', now());
+
+INSERT INTO "HubLogistico" (id, name, city, "fixedDispatchCost", "variableCostPerM3", "capacityM3") VALUES
+  ('test_hub_1', 'Hub Teste RLS', 'Manaus - AM', 1800, 95, 40),
+  -- Hub extra so pro caso 14c -- evita colidir com o indice unico parcial
+  -- de test_disp_fornecedor_2 (produtoId=test_produto_2, hubId=test_hub_1),
+  -- isolando a causa da rejeicao: so a politica RLS, nao o unique.
+  ('test_hub_2', 'Hub Teste RLS 2', 'Belem - PA', 1500, 80, 30);
+
+INSERT INTO "DisponibilidadeFornecedor" (id, "produtoId", "fornecedorId", "hubId", "quantidadeMinimaM3", "quantidadeMaximaM3", "prazoMaximoEsperaDias", "createdAt") VALUES
+  ('test_disp_fornecedor_2', 'test_produto_2', 'test_fornecedor_2', 'test_hub_1', 1, 10, 5, now());
 
 INSERT INTO "Lote" (id, "produtoId", "hubId", status, "totalVolumeM3", "createdAt") VALUES
   ('test_lote_1', 'test_produto_1', 'test_hub_1', 'ABERTO', 0, now()),
@@ -691,6 +700,55 @@ END
 $$;
 
 RESET app.comprador_id;
+RESET ROLE;
+
+-- --- Caso 14: isolamento fornecedor A vs B (app_fornecedor) -----------------
+-- Espelha o caso 1 (comprador A vs B), agora pra Produto/
+-- DisponibilidadeFornecedor via app_fornecedor/app.fornecedor_id.
+-- rls-app-backend.sql ja prova NOINHERIT (fail-closed sem SET ROLE) e que
+-- o bloqueio some depois do SET ROLE -- mas nao prova isolamento ENTRE
+-- dois fornecedores, que e o que falta aqui.
+
+SET LOCAL ROLE app_fornecedor;
+SET LOCAL app.fornecedor_id = 'test_fornecedor_1';
+
+DO $$
+DECLARE
+  ve_disp_f2    boolean;
+  linhas_afetadas int;
+  bloqueado     boolean := false;
+BEGIN
+  -- 14a: SELECT nao traz a disponibilidade do fornecedor 2.
+  SELECT EXISTS(SELECT 1 FROM "DisponibilidadeFornecedor" WHERE id = 'test_disp_fornecedor_2')
+    INTO ve_disp_f2;
+  PERFORM pg_temp.registrar('caso 14a: fornecedor 1 NAO ve a disponibilidade do fornecedor 2', NOT ve_disp_f2);
+
+  -- 14b: UPDATE por id na linha do fornecedor 2 afeta 0 linhas -- RLS
+  -- esconde a linha (nao da erro, design-backend.md 2.4), nao bloqueia
+  -- por privilegio (o GRANT UPDATE existe pra app_fornecedor em geral).
+  UPDATE "DisponibilidadeFornecedor" SET "prazoMaximoEsperaDias" = 999
+    WHERE id = 'test_disp_fornecedor_2';
+  GET DIAGNOSTICS linhas_afetadas = ROW_COUNT;
+  PERFORM pg_temp.registrar('caso 14b: UPDATE na linha do fornecedor 2 afeta 0 linhas (RLS esconde)',
+    linhas_afetadas = 0, format('linhas afetadas=%s', linhas_afetadas));
+
+  -- 14c: INSERT tentando usar fornecedorId do fornecedor 2 (sessao e do
+  -- fornecedor 1) -- rejeitado pelo WITH CHECK de disponibilidade_own.
+  -- produtoId/hubId=test_produto_2/test_hub_2 e uma combinacao NOVA (nao
+  -- colide com o indice unico parcial), pra isolar a causa da rejeicao
+  -- na RLS, nao no unique.
+  BEGIN
+    INSERT INTO "DisponibilidadeFornecedor"
+      (id, "produtoId", "fornecedorId", "hubId", "quantidadeMinimaM3", "quantidadeMaximaM3", "prazoMaximoEsperaDias")
+    VALUES ('test_disp_forjada', 'test_produto_2', 'test_fornecedor_2', 'test_hub_2', 1, 10, 5);
+  EXCEPTION WHEN insufficient_privilege OR OTHERS THEN
+    bloqueado := true;
+  END;
+  PERFORM pg_temp.registrar('caso 14c: INSERT com fornecedorId de outro fornecedor rejeitado (WITH CHECK)', bloqueado);
+END
+$$;
+
+RESET app.fornecedor_id;
 RESET ROLE;
 
 -- --- Relatorio final e verificacao ------------------------------------------
