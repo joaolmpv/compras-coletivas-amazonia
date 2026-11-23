@@ -77,17 +77,38 @@ INSERT INTO "Produto" (id, name, "unitPrice", "fornecedorId", "createdAt") VALUE
 INSERT INTO "HubLogistico" (id, name, city, "fixedDispatchCost", "variableCostPerM3", "capacityM3") VALUES
   ('test_hub_1', 'Hub Teste RLS', 'Manaus - AM', 1800, 95, 40);
 
+INSERT INTO "Fornecedor" (id, name, document, "createdAt") VALUES
+  ('test_fornecedor_2', 'Fornecedor Teste RLS 2 (errado de proposito)', 'RLS-TEST-DOC-F2', now());
+
 INSERT INTO "Lote" (id, "produtoId", "hubId", status, "totalVolumeM3", "createdAt") VALUES
   ('test_lote_1', 'test_produto_1', 'test_hub_1', 'ABERTO', 0, now()),
-  ('test_lote_2', 'test_produto_1', 'test_hub_1', 'ABERTO', 0, now());
+  ('test_lote_2', 'test_produto_1', 'test_hub_1', 'ABERTO', 0, now()),
+  -- Fixtures da Avaliacao verificada (E4, migration 20261112140512): o
+  -- trigger fn_avaliacao_requer_entregue agora roda em QUALQUER insert em
+  -- Avaliacao, inclusive os de postgres abaixo -- triggers nao sao
+  -- bypassados por superuser/BYPASSRLS (so RLS e). Cada Avaliacao desta
+  -- secao precisa de um PedidoLote elegivel (lote ENTREGUE) PROPRIO -- um
+  -- lote distinto por fixture, nao o mesmo reaproveitado, porque
+  -- PedidoLote tem @@unique([loteId, compradorId]) (um comprador so tem
+  -- UM pedido por lote).
+  ('test_lote_entregue_a', 'test_produto_1', 'test_hub_1', 'ENTREGUE', 1, now()),
+  ('test_lote_entregue_b', 'test_produto_1', 'test_hub_1', 'ENTREGUE', 1, now()),
+  ('test_lote_entregue_c', 'test_produto_1', 'test_hub_1', 'ENTREGUE', 1, now()),
+  ('test_lote_entregue_d', 'test_produto_1', 'test_hub_1', 'ENTREGUE', 1, now()),
+  ('test_lote_entregue_e', 'test_produto_1', 'test_hub_1', 'ENTREGUE', 1, now());
 
 INSERT INTO "PedidoLote" (id, "loteId", "compradorId", "volumeM3", "costShare") VALUES
   ('test_pedido_a', 'test_lote_1', 'test_comprador_a', 5.0, 123.45),
-  ('test_pedido_b', 'test_lote_1', 'test_comprador_b', 7.0, 234.56);
+  ('test_pedido_b', 'test_lote_1', 'test_comprador_b', 7.0, 234.56),
+  ('test_pedido_entregue_a', 'test_lote_entregue_a', 'test_comprador_a', 1.0, 10.0),
+  ('test_pedido_entregue_b', 'test_lote_entregue_b', 'test_comprador_b', 1.0, 10.0),
+  ('test_pedido_entregue_c', 'test_lote_entregue_c', 'test_comprador_a', 1.0, 10.0),
+  ('test_pedido_entregue_d', 'test_lote_entregue_d', 'test_comprador_a', 1.0, 10.0),
+  ('test_pedido_entregue_e', 'test_lote_entregue_e', 'test_comprador_a', 1.0, 10.0);
 
-INSERT INTO "Avaliacao" (id, "fornecedorId", "compradorId", rating, "createdAt") VALUES
-  ('test_avaliacao_a', 'test_fornecedor_1', 'test_comprador_a', 5, now()),
-  ('test_avaliacao_b', 'test_fornecedor_1', 'test_comprador_b', 2, now());
+INSERT INTO "Avaliacao" (id, "fornecedorId", "compradorId", "pedidoLoteId", rating, "createdAt") VALUES
+  ('test_avaliacao_a', 'test_fornecedor_1', 'test_comprador_a', 'test_pedido_entregue_a', 5, now()),
+  ('test_avaliacao_b', 'test_fornecedor_1', 'test_comprador_b', 'test_pedido_entregue_b', 2, now());
 
 -- --- Caso 1: sessao do Comprador A ------------------------------------------
 
@@ -299,8 +320,8 @@ DECLARE
   bloqueado boolean := false;
 BEGIN
   BEGIN
-    INSERT INTO "Avaliacao" (id, "fornecedorId", "compradorId", rating, "sentimentScore")
-    VALUES ('test_avaliacao_sentimento', 'test_fornecedor_1', 'test_comprador_a', 4, 0.9);
+    INSERT INTO "Avaliacao" (id, "fornecedorId", "compradorId", "pedidoLoteId", rating, "sentimentScore")
+    VALUES ('test_avaliacao_sentimento', 'test_fornecedor_1', 'test_comprador_a', 'test_pedido_entregue_c', 4, 0.9);
   EXCEPTION WHEN insufficient_privilege THEN
     bloqueado := true;
   END;
@@ -313,8 +334,8 @@ DECLARE
   ok boolean := true;
 BEGIN
   BEGIN
-    INSERT INTO "Avaliacao" (id, "fornecedorId", "compradorId", rating, comment)
-    VALUES ('test_avaliacao_sem_sentimento', 'test_fornecedor_1', 'test_comprador_a', 4, 'Chegou no prazo.');
+    INSERT INTO "Avaliacao" (id, "fornecedorId", "compradorId", "pedidoLoteId", rating, comment)
+    VALUES ('test_avaliacao_sem_sentimento', 'test_fornecedor_1', 'test_comprador_a', 'test_pedido_entregue_d', 4, 'Chegou no prazo.');
   EXCEPTION WHEN insufficient_privilege THEN
     ok := false;
   END;
@@ -530,6 +551,146 @@ BEGIN
 END
 $$;
 
+RESET ROLE;
+
+-- --- Caso 13: Avaliacao verificada -- fn_avaliacao_requer_entregue (E4) ----
+-- Fixtures como postgres: lotes CANCELADO com cada motivo, pra testar qual
+-- libera avaliacao (so FORNECEDOR_NAO_DESPACHOU) e qual nao.
+
+INSERT INTO "Lote" (id, "produtoId", "hubId", status, "totalVolumeM3", "motivoCancelamento", "createdAt") VALUES
+  ('test_lote_cancel_nd', 'test_produto_1', 'test_hub_1', 'CANCELADO', 0, 'FORNECEDOR_NAO_DESPACHOU', now()),
+  ('test_lote_cancel_recusou', 'test_produto_1', 'test_hub_1', 'CANCELADO', 0, 'FORNECEDOR_RECUSOU', now()),
+  ('test_lote_cancel_exp', 'test_produto_1', 'test_hub_1', 'CANCELADO', 0, 'EXPIRACAO_SEM_CONFIRMACAO', now());
+
+INSERT INTO "PedidoLote" (id, "loteId", "compradorId", "volumeM3") VALUES
+  ('test_pedido_cancel_nd', 'test_lote_cancel_nd', 'test_comprador_a', 1.0),
+  ('test_pedido_cancel_recusou', 'test_lote_cancel_recusou', 'test_comprador_a', 1.0),
+  ('test_pedido_cancel_exp', 'test_lote_cancel_exp', 'test_comprador_a', 1.0);
+
+SET LOCAL ROLE app_comprador;
+SET LOCAL app.comprador_id = 'test_comprador_a';
+
+DO $$
+DECLARE
+  bloqueado boolean;
+BEGIN
+  -- 13a: lote ainda ABERTO (nunca foi ENTREGUE) -- recusa.
+  bloqueado := false;
+  BEGIN
+    INSERT INTO "Avaliacao" (id, "fornecedorId", "compradorId", "pedidoLoteId", rating)
+    VALUES ('test_avaliacao_13a', 'test_fornecedor_1', 'test_comprador_a', 'test_pedido_a', 5);
+  EXCEPTION WHEN OTHERS THEN
+    bloqueado := true;
+  END;
+  PERFORM pg_temp.registrar('caso 13a: avaliacao antes da entrega (lote ABERTO) recusada', bloqueado);
+
+  -- 13b: pedidoLoteId e de test_comprador_a, mas quem assina a avaliacao e
+  -- test_comprador_b -- recusa (compradorId nao bate com o dono do pedido).
+  bloqueado := false;
+  BEGIN
+    INSERT INTO "Avaliacao" (id, "fornecedorId", "compradorId", "pedidoLoteId", rating)
+    VALUES ('test_avaliacao_13b', 'test_fornecedor_1', 'test_comprador_b', 'test_pedido_entregue_a', 5);
+  EXCEPTION WHEN OTHERS THEN
+    bloqueado := true;
+  END;
+  PERFORM pg_temp.registrar('caso 13b: avaliacao com pedidoLoteId de outro comprador recusada', bloqueado);
+
+  -- 13c: fornecedorId nao e o dono do produto do lote -- recusa.
+  bloqueado := false;
+  BEGIN
+    INSERT INTO "Avaliacao" (id, "fornecedorId", "compradorId", "pedidoLoteId", rating)
+    VALUES ('test_avaliacao_13c', 'test_fornecedor_2', 'test_comprador_a', 'test_pedido_entregue_a', 5);
+  EXCEPTION WHEN OTHERS THEN
+    bloqueado := true;
+  END;
+  PERFORM pg_temp.registrar('caso 13c: avaliacao com fornecedorId errado recusada', bloqueado);
+
+  -- 13d: ataque de tabela temporaria -- shadow de PedidoLote/Lote/Produto
+  -- afirmando que test_pedido_a (na VERDADE ligado a test_lote_1, ABERTO)
+  -- pertence a um lote ENTREGUE. Se o trigger nao qualificasse os nomes
+  -- (public."PedidoLote" etc.) e nao tivesse search_path explicito, isso
+  -- enganaria a checagem -- mesma defesa de fn_breakdown_lote (migration
+  -- 20261029183122).
+  CREATE TEMP TABLE "PedidoLote" (id text, "loteId" text, "compradorId" text, "volumeM3" float8);
+  INSERT INTO pg_temp."PedidoLote" (id, "loteId", "compradorId", "volumeM3")
+    VALUES ('test_pedido_a', 'fake_lote_entregue', 'test_comprador_a', 5);
+
+  CREATE TEMP TABLE "Lote" (id text, status text, "motivoCancelamento" text, "produtoId" text);
+  INSERT INTO pg_temp."Lote" (id, status, "produtoId") VALUES ('fake_lote_entregue', 'ENTREGUE', 'test_produto_1');
+
+  CREATE TEMP TABLE "Produto" (id text, "fornecedorId" text);
+  INSERT INTO pg_temp."Produto" (id, "fornecedorId") VALUES ('test_produto_1', 'test_fornecedor_1');
+
+  bloqueado := false;
+  BEGIN
+    INSERT INTO "Avaliacao" (id, "fornecedorId", "compradorId", "pedidoLoteId", rating)
+    VALUES ('test_avaliacao_13d', 'test_fornecedor_1', 'test_comprador_a', 'test_pedido_a', 5);
+  EXCEPTION WHEN OTHERS THEN
+    bloqueado := true;
+  END;
+  PERFORM pg_temp.registrar('caso 13d: tabela temporaria falsa nao engana o trigger', bloqueado,
+    'test_pedido_a e de test_lote_1 (ABERTO) de verdade -- shadow afirmava ENTREGUE');
+
+  DROP TABLE pg_temp."PedidoLote";
+  DROP TABLE pg_temp."Lote";
+  DROP TABLE pg_temp."Produto";
+
+  -- 13e: tudo certo (lote ENTREGUE, comprador e fornecedor corretos) -- aceita.
+  bloqueado := false;
+  BEGIN
+    INSERT INTO "Avaliacao" (id, "fornecedorId", "compradorId", "pedidoLoteId", rating)
+    VALUES ('test_avaliacao_13e', 'test_fornecedor_1', 'test_comprador_a', 'test_pedido_entregue_e', 5);
+  EXCEPTION WHEN OTHERS THEN
+    bloqueado := true;
+  END;
+  PERFORM pg_temp.registrar('caso 13e: avaliacao valida (lote ENTREGUE) aceita', NOT bloqueado);
+
+  -- 13f: mesmo pedidoLoteId de 13e, segunda vez -- recusa (unique).
+  bloqueado := false;
+  BEGIN
+    INSERT INTO "Avaliacao" (id, "fornecedorId", "compradorId", "pedidoLoteId", rating)
+    VALUES ('test_avaliacao_13f', 'test_fornecedor_1', 'test_comprador_a', 'test_pedido_entregue_e', 1);
+  EXCEPTION WHEN OTHERS THEN
+    bloqueado := true;
+  END;
+  PERFORM pg_temp.registrar('caso 13f: avaliacao duplicada (mesmo pedidoLoteId) recusada', bloqueado);
+
+  -- 13g: lote CANCELADO por FORNECEDOR_NAO_DESPACHOU -- aceita (unico
+  -- motivo de cancelamento que libera avaliacao).
+  bloqueado := false;
+  BEGIN
+    INSERT INTO "Avaliacao" (id, "fornecedorId", "compradorId", "pedidoLoteId", rating)
+    VALUES ('test_avaliacao_13g', 'test_fornecedor_1', 'test_comprador_a', 'test_pedido_cancel_nd', 1);
+  EXCEPTION WHEN OTHERS THEN
+    bloqueado := true;
+  END;
+  PERFORM pg_temp.registrar('caso 13g: cancelado por FORNECEDOR_NAO_DESPACHOU aceita', NOT bloqueado);
+
+  -- 13h: lote CANCELADO por FORNECEDOR_RECUSOU -- recusa (recusar e
+  -- direito legitimo do fornecedor, nao libera avaliacao).
+  bloqueado := false;
+  BEGIN
+    INSERT INTO "Avaliacao" (id, "fornecedorId", "compradorId", "pedidoLoteId", rating)
+    VALUES ('test_avaliacao_13h', 'test_fornecedor_1', 'test_comprador_a', 'test_pedido_cancel_recusou', 1);
+  EXCEPTION WHEN OTHERS THEN
+    bloqueado := true;
+  END;
+  PERFORM pg_temp.registrar('caso 13h: cancelado por FORNECEDOR_RECUSOU recusada', bloqueado);
+
+  -- 13i: lote CANCELADO por EXPIRACAO_SEM_CONFIRMACAO -- recusa (demora
+  -- entra no OE4 via "tempo medio de resposta", nao por avaliacao textual).
+  bloqueado := false;
+  BEGIN
+    INSERT INTO "Avaliacao" (id, "fornecedorId", "compradorId", "pedidoLoteId", rating)
+    VALUES ('test_avaliacao_13i', 'test_fornecedor_1', 'test_comprador_a', 'test_pedido_cancel_exp', 1);
+  EXCEPTION WHEN OTHERS THEN
+    bloqueado := true;
+  END;
+  PERFORM pg_temp.registrar('caso 13i: cancelado por EXPIRACAO_SEM_CONFIRMACAO recusada', bloqueado);
+END
+$$;
+
+RESET app.comprador_id;
 RESET ROLE;
 
 -- --- Relatorio final e verificacao ------------------------------------------

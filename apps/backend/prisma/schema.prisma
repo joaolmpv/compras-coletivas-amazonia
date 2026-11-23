@@ -34,6 +34,29 @@ enum StatusLote {
   CANCELADO
 }
 
+// Minimo necessario agora pra desbloquear a decisao de Avaliacao
+// verificada (E4) -- a maquina de estados completa (CANDIDATO, transicoes,
+// quem pode cancelar por qual motivo) e desenhada depois, no proprio
+// escopo "maquina de estados" da E4; este enum pode crescer ou ser
+// ajustado quando isso acontecer, nunca editando a migration ja aplicada
+// (ESTA, porem, nunca foi aplicada -- corrigida no lugar apos revisao).
+//
+// So FORNECEDOR_NAO_DESPACHOU libera avaliacao
+// (fn_avaliacao_requer_entregue). FORNECEDOR_RECUSOU e
+// EXPIRACAO_SEM_CONFIRMACAO acontecem com o lote CANDIDATO, antes de
+// existir PedidoLote -- recusar e um direito legitimo do fornecedor, e a
+// demora em responder entra no OE4 pela metrica "tempo medio de
+// resposta", nao por avaliacao textual. DEMANDA_INSUFICIENTE e o caso do
+// lote ABERTO que nao atinge o minimo do fornecedor no prazo -- tambem
+// nao e falha do fornecedor, tambem nao libera.
+enum MotivoCancelamento {
+  FORNECEDOR_RECUSOU
+  FORNECEDOR_NAO_DESPACHOU
+  EXPIRACAO_SEM_CONFIRMACAO
+  DEMANDA_INSUFICIENTE
+  ADMIN_OVERRIDE
+}
+
 enum StatusPagamento {
   PENDENTE
   RETIDO
@@ -161,18 +184,19 @@ model DisponibilidadeFornecedor {
 }
 
 model Lote {
-  id            String       @id @default(cuid())
-  produtoId     String
-  produto       Produto      @relation(fields: [produtoId], references: [id])
-  hubId         String
-  hub           HubLogistico @relation(fields: [hubId], references: [id])
-  status        StatusLote   @default(ABERTO)
-  totalVolumeM3 Float        @default(0)
-  totalCost     Float? // preenchido quando o lote fecha (custo fixo + variavel do hub)
-  dispatchDate  DateTime?
-  createdAt     DateTime     @default(now())
-  pedidosLote   PedidoLote[]
-  repasse       Repasse?
+  id                 String              @id @default(cuid())
+  produtoId          String
+  produto            Produto             @relation(fields: [produtoId], references: [id])
+  hubId              String
+  hub                HubLogistico        @relation(fields: [hubId], references: [id])
+  status             StatusLote          @default(ABERTO)
+  totalVolumeM3      Float               @default(0)
+  totalCost          Float? // preenchido quando o lote fecha (custo fixo + variavel do hub)
+  dispatchDate       DateTime?
+  motivoCancelamento MotivoCancelamento? // so preenchido quando status = CANCELADO
+  createdAt          DateTime            @default(now())
+  pedidosLote        PedidoLote[]
+  repasse            Repasse?
 }
 
 model PedidoLote {
@@ -189,6 +213,7 @@ model PedidoLote {
   // migration de GRANTs por coluna, design-backend.md secao 4.4).
   costShare   Float?
   pagamento   Pagamento?
+  avaliacao   Avaliacao?
 
   @@unique([loteId, compradorId])
 }
@@ -226,6 +251,11 @@ model Avaliacao {
   fornecedor     Fornecedor @relation(fields: [fornecedorId], references: [id])
   compradorId    String
   comprador      Comprador  @relation(fields: [compradorId], references: [id])
+  // Avaliacao verificada (decisao E4, 12/11/2026): uma avaliacao por
+  // pedido, nunca criada livremente -- o trigger fn_avaliacao_requer_entregue
+  // (migration dedicada) e quem decide se pode existir, nao so esta FK.
+  pedidoLoteId   String     @unique
+  pedidoLote     PedidoLote @relation(fields: [pedidoLoteId], references: [id])
   rating         Int // 1 a 5
   comment        String?
   // Preenchido de forma assincrona pela Google Cloud Natural Language API (OE4).
