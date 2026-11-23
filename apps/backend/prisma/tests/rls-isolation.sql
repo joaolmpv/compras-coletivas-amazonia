@@ -801,6 +801,47 @@ $$;
 
 RESET ROLE;
 
+-- --- Caso 16: RLS em HubLogistico (23/11/2026, proposta 3/3) ---------------
+-- Catalogo publico pros tres roles de negocio; qualquer outro role
+-- (app_auth, que nunca precisou ler HubLogistico) fica de fora por FORCE
+-- RLS + ausencia de GRANT/politica -- fail-closed, nao fail-open.
+
+DO $$
+DECLARE
+  cnt int;
+BEGIN
+  SET LOCAL ROLE app_comprador;
+  SELECT count(*) INTO cnt FROM "HubLogistico" WHERE id = 'test_hub_1';
+  PERFORM pg_temp.registrar('caso 16a: app_comprador le HubLogistico', cnt = 1);
+  RESET ROLE;
+
+  SET LOCAL ROLE app_fornecedor;
+  SELECT count(*) INTO cnt FROM "HubLogistico" WHERE id = 'test_hub_1';
+  PERFORM pg_temp.registrar('caso 16b: app_fornecedor le HubLogistico', cnt = 1);
+  RESET ROLE;
+
+  SET LOCAL ROLE app_service;
+  SELECT count(*) INTO cnt FROM "HubLogistico" WHERE id = 'test_hub_1';
+  PERFORM pg_temp.registrar('caso 16c: app_service le HubLogistico', cnt = 1);
+  RESET ROLE;
+END
+$$;
+
+DO $$
+DECLARE
+  bloqueado boolean := false;
+BEGIN
+  SET LOCAL ROLE app_auth;
+  BEGIN
+    PERFORM 1 FROM "HubLogistico" LIMIT 1;
+  EXCEPTION WHEN insufficient_privilege THEN
+    bloqueado := true;
+  END;
+  PERFORM pg_temp.registrar('caso 16d: app_auth NAO le HubLogistico (sem GRANT, nunca precisou)', bloqueado);
+  RESET ROLE;
+END
+$$;
+
 -- --- Relatorio final e verificacao ------------------------------------------
 
 SELECT id, caso, status, detalhe FROM resultados_teste ORDER BY id;
