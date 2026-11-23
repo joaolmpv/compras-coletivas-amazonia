@@ -1447,7 +1447,18 @@ lado do fornecedor) / E4 (intenção, lado do comprador, + o estado
 `CANDIDATO`) / E5 (o job que as cruza):
 
 ```prisma
-// Proposta -- mostrar e aprovar no inicio da E3, antes da migration.
+// DisponibilidadeFornecedor: rascunho original da proposta abaixo --
+// SUPERADO pela implementacao real na E3 (ver schema.prisma e migrations
+// 20261112132503/20261112150000/20261123160000). Diferencas reais: uma
+// linha por produto x hub (nao m:n com HubLogistico -- hubs diferentes
+// podem ter limites diferentes); @@unique([produtoId,hubId]) trocado por
+// INDICE UNICO PARCIAL (WHERE vigenciaFim IS NULL, historico preservado);
+// consistencia fornecedorId<->produtoId e FK COMPOSTA estrutural (nao so
+// constraint/trigger, a duvida registrada abaixo ja foi resolvida); e,
+// pela decisao de unidades comerciais (23/11/2026), quantidadeMinima/
+// Maxima sao uma CONTAGEM de Produto.unidadeComercial, nao m3 direto --
+// m3 e calculado via produto.volumePorUnidadeM3 quando precisar, nunca
+// armazenado. Mantido abaixo so como registro historico da proposta.
 model DisponibilidadeFornecedor {
   id                String         @id @default(cuid())
   produtoId         String
@@ -1471,6 +1482,10 @@ model DisponibilidadeFornecedor {
 }
 
 // Proposta -- mostrar e aprovar no inicio da E4, antes da migration.
+// quantidade (decisao de unidades comerciais, 23/11/2026): em
+// Produto.unidadeComercial do produto escolhido -- "quero 10 sacos", nao
+// "quero 2 m3" -- mesmo padrao de DisponibilidadeFornecedor.quantidadeMinima/
+// Maxima e do PedidoLote.quantidade ja implementados (ver schema.prisma).
 model IntencaoCompra {
   id            String       @id @default(cuid())
   compradorId   String
@@ -1479,7 +1494,7 @@ model IntencaoCompra {
   produto       Produto      @relation(fields: [produtoId], references: [id])
   hubId         String
   hub           HubLogistico @relation(fields: [hubId], references: [id])
-  quantidade    Float
+  quantidade    Float        // em Produto.unidadeComercial, nao m3/kg
   prazoMaximo   DateTime
   // Sem campo de valor/custo -- D-B e explicito que a intencao nao e
   // compromisso financeiro (isso so existe depois que o lote CANDIDATO
