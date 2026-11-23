@@ -10,8 +10,7 @@ describe('DisponibilidadesController', () => {
       listar: jest.fn().mockResolvedValue({ items: [], page: 1, pageSize: 20, total: 0 }),
       buscarPorId: jest.fn().mockResolvedValue({ id: 'd1' }),
       criar: jest.fn().mockResolvedValue({ id: 'd1' }),
-      atualizar: jest.fn().mockResolvedValue({ id: 'd1', quantidadeMaxima: 200 }),
-      remover: jest.fn().mockResolvedValue(undefined),
+      atualizar: jest.fn().mockResolvedValue({ id: 'd1', quantidadeMaximaM3: 200 }),
     };
     controller = new DisponibilidadesController(disponibilidades as unknown as DisponibilidadesService);
   });
@@ -28,18 +27,13 @@ describe('DisponibilidadesController', () => {
 
   it('criar usa o perfilId do principal (fornecedorId), nao um campo do payload', async () => {
     const principal = { sub: 'u1', role: 'FORNECEDOR' as const, perfilId: 'f1' };
-    const dto = { produtoId: 'p1', hubId: 'h1', quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 };
+    const dto = { produtoId: 'p1', hubId: 'h1', quantidadeMinimaM3: 1, quantidadeMaximaM3: 10, prazoMaximoEsperaDias: 5 };
     await controller.criar(principal, dto);
     expect(disponibilidades.criar).toHaveBeenCalledWith('f1', dto);
   });
 
   it('atualizar delega ao service com id e dto', async () => {
-    await controller.atualizar('d1', { quantidadeMaxima: 200 });
-    expect(disponibilidades.atualizar).toHaveBeenCalledWith('d1', { quantidadeMaxima: 200 });
-  });
-
-  it('remover delega ao service', async () => {
-    await controller.remover('d1');
-    expect(disponibilidades.remover).toHaveBeenCalledWith('d1');
+    await controller.atualizar('d1', { quantidadeMaximaM3: 200 });
+    expect(disponibilidades.atualizar).toHaveBeenCalledWith('d1', { quantidadeMaximaM3: 200 });
   });
 });

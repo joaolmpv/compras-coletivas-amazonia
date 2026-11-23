@@ -10,7 +10,6 @@ function buildTxMock() {
       findUnique: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
-      delete: jest.fn(),
     },
     produto: {
       findUnique: jest.fn(),
@@ -74,8 +73,8 @@ describe('DisponibilidadesService', () => {
     const dto = {
       produtoId: 'p1',
       hubId: 'h1',
-      quantidadeMinima: 10,
-      quantidadeMaxima: 100,
+      quantidadeMinimaM3: 10,
+      quantidadeMaximaM3: 100,
       prazoMaximoEsperaDias: 5,
     };
 
@@ -112,40 +111,28 @@ describe('DisponibilidadesService', () => {
 
   describe('atualizar', () => {
     it('atualiza quando o UPDATE bate uma linha', async () => {
-      tx.disponibilidadeFornecedor.update.mockResolvedValue({ id: 'd1', quantidadeMaxima: 200 });
-      const resultado = await service.atualizar('d1', { quantidadeMaxima: 200 });
-      expect(resultado).toEqual({ id: 'd1', quantidadeMaxima: 200 });
+      tx.disponibilidadeFornecedor.update.mockResolvedValue({ id: 'd1', quantidadeMaximaM3: 200 });
+      const resultado = await service.atualizar('d1', { quantidadeMaximaM3: 200 });
+      expect(resultado).toEqual({ id: 'd1', quantidadeMaximaM3: 200 });
     });
 
     it('mapeia P2025 para RECURSO_NAO_ENCONTRADO', async () => {
       tx.disponibilidadeFornecedor.update.mockRejectedValue(prismaErro('P2025'));
-      await expect(service.atualizar('d-de-outro', { quantidadeMaxima: 1 })).rejects.toMatchObject({
+      await expect(service.atualizar('d-de-outro', { quantidadeMaximaM3: 1 })).rejects.toMatchObject({
         code: 'RECURSO_NAO_ENCONTRADO',
       });
     });
 
     it('mapeia violacao do CHECK minima<=maxima (contra valor ja salvo) para VALIDACAO', async () => {
       tx.disponibilidadeFornecedor.update.mockRejectedValue(prismaCheckViolation());
-      await expect(service.atualizar('d1', { quantidadeMinima: 999 })).rejects.toMatchObject({
+      await expect(service.atualizar('d1', { quantidadeMinimaM3: 999 })).rejects.toMatchObject({
         code: 'VALIDACAO',
       });
     });
 
     it('propaga erros que nao sao P2025/P2002/CHECK min_le_max', async () => {
       tx.disponibilidadeFornecedor.update.mockRejectedValue(new Error('boom'));
-      await expect(service.atualizar('d1', { quantidadeMaxima: 1 })).rejects.toThrow('boom');
-    });
-  });
-
-  describe('remover', () => {
-    it('remove quando o DELETE bate uma linha', async () => {
-      tx.disponibilidadeFornecedor.delete.mockResolvedValue({ id: 'd1' });
-      await expect(service.remover('d1')).resolves.toBeUndefined();
-    });
-
-    it('mapeia P2025 para RECURSO_NAO_ENCONTRADO', async () => {
-      tx.disponibilidadeFornecedor.delete.mockRejectedValue(prismaErro('P2025'));
-      await expect(service.remover('d-de-outro')).rejects.toMatchObject({ code: 'RECURSO_NAO_ENCONTRADO' });
+      await expect(service.atualizar('d1', { quantidadeMaximaM3: 1 })).rejects.toThrow('boom');
     });
   });
 });

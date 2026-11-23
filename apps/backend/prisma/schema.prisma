@@ -140,6 +140,12 @@ model Produto {
   lotes            Lote[]
   disponibilidades DisponibilidadeFornecedor[] // D-B (E3)
   createdAt        DateTime                    @default(now())
+
+  // Unique redundante com "id" de proposito: e o QUE a FK composta de
+  // DisponibilidadeFornecedor(produtoId, fornecedorId) referencia, pra
+  // travar no banco que o fornecedorId denormalizado la sempre bate com
+  // o fornecedor REAL do produto -- antes disso so a aplicacao garantia.
+  @@unique([id, fornecedorId])
 }
 
 model HubLogistico {
@@ -173,14 +179,26 @@ model DisponibilidadeFornecedor {
   fornecedor            Fornecedor   @relation(fields: [fornecedorId], references: [id])
   hubId                 String
   hub                   HubLogistico @relation(fields: [hubId], references: [id])
-  quantidadeMinima      Float // minimo de despacho -- CHECK <= quantidadeMaxima na migration
-  quantidadeMaxima      Float // maximo disponivel
+  // Sufixo M3: mesma unidade de PedidoLote.volumeM3/Lote.totalVolumeM3 --
+  // direto comparavel/convertivel no calculo de rateio, sem fator de
+  // conversao. Antes (quantidadeMinima/quantidadeMaxima) a unidade nao
+  // era explicita -- renomeado na revisao.
+  quantidadeMinimaM3    Float // minimo de despacho -- CHECK <= quantidadeMaximaM3 na migration
+  quantidadeMaximaM3    Float // maximo disponivel
   prazoMaximoEsperaDias Int
   vigenciaInicio        DateTime     @default(now())
+  // NULL = vigente agora. A unicidade "uma vigente por produto x hub" e
+  // um INDICE PARCIAL (WHERE "vigenciaFim" IS NULL), nao expressavel no
+  // schema do Prisma -- vive so no SQL da migration. @@unique() comum
+  // aqui impediria reabrir uma disponibilidade apos encerrar a anterior
+  // (historico preservado), que e o objetivo.
   vigenciaFim           DateTime?
   createdAt             DateTime     @default(now())
 
-  @@unique([produtoId, hubId])
+  // FK composta -- garante no banco que fornecedorId bate com o
+  // fornecedor REAL do produtoId (contra Produto.@@unique([id,
+  // fornecedorId])), nao so na aplicacao (ProdutosService-style check).
+  @@index([produtoId, hubId])
 }
 
 model Lote {

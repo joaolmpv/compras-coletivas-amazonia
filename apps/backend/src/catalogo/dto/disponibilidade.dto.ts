@@ -5,14 +5,14 @@ export const CriarDisponibilidadeSchema = z
   .object({
     produtoId: z.string().min(1),
     hubId: z.string().min(1),
-    quantidadeMinima: z.number().positive(),
-    quantidadeMaxima: z.number().positive(),
+    quantidadeMinimaM3: z.number().positive(),
+    quantidadeMaximaM3: z.number().positive(),
     prazoMaximoEsperaDias: z.number().int().positive(),
     vigenciaFim: z.coerce.date().optional(),
   })
-  .refine((v) => v.quantidadeMinima <= v.quantidadeMaxima, {
-    message: 'quantidadeMinima deve ser menor ou igual a quantidadeMaxima',
-    path: ['quantidadeMinima'],
+  .refine((v) => v.quantidadeMinimaM3 <= v.quantidadeMaximaM3, {
+    message: 'quantidadeMinimaM3 deve ser menor ou igual a quantidadeMaximaM3',
+    path: ['quantidadeMinimaM3'],
   });
 export type CriarDisponibilidadeDto = z.infer<typeof CriarDisponibilidadeSchema>;
 
@@ -21,23 +21,23 @@ export type CriarDisponibilidadeDto = z.infer<typeof CriarDisponibilidadeSchema>
 // hubId])); quem quiser isso remove e cria outra.
 export const AtualizarDisponibilidadeSchema = z
   .object({
-    quantidadeMinima: z.number().positive().optional(),
-    quantidadeMaxima: z.number().positive().optional(),
+    quantidadeMinimaM3: z.number().positive().optional(),
+    quantidadeMaximaM3: z.number().positive().optional(),
     prazoMaximoEsperaDias: z.number().int().positive().optional(),
     vigenciaFim: z.coerce.date().nullable().optional(),
   })
   .refine((v) => Object.keys(v).length > 0, { message: 'informe ao menos um campo' })
   .refine(
     (v) =>
-      v.quantidadeMinima === undefined ||
-      v.quantidadeMaxima === undefined ||
-      v.quantidadeMinima <= v.quantidadeMaxima,
+      v.quantidadeMinimaM3 === undefined ||
+      v.quantidadeMaximaM3 === undefined ||
+      v.quantidadeMinimaM3 <= v.quantidadeMaximaM3,
     {
       // Se so UM dos dois vier no payload, o Zod nao tem como validar contra
       // o valor atualmente salvo do outro -- o CHECK do banco
       // (DisponibilidadeFornecedor_min_le_max, mapeado de P2004 no service)
       // e quem fecha essa lacuna.
-      message: 'quantidadeMinima deve ser menor ou igual a quantidadeMaxima',
+      message: 'quantidadeMinimaM3 deve ser menor ou igual a quantidadeMaximaM3',
     },
   );
 export type AtualizarDisponibilidadeDto = z.infer<typeof AtualizarDisponibilidadeSchema>;

@@ -1,17 +1,4 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  HttpCode,
-  HttpStatus,
-  Inject,
-  Param,
-  Patch,
-  Post,
-  Query,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Get, Inject, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { DisponibilidadesService } from './disponibilidades.service';
 import { DbRoleMeta } from '../common/db-role.decorator';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
@@ -59,17 +46,16 @@ export class DisponibilidadesController {
     return this.disponibilidades.criar(principal.perfilId!, dto);
   }
 
+  // Sem DELETE de proposito: o indice unico parcial (WHERE "vigenciaFim"
+  // IS NULL) existe pra preservar historico -- "remover" uma
+  // disponibilidade e sempre encerrar a vigencia (PATCH com vigenciaFim),
+  // nunca apagar a linha. GRANT DELETE foi revogado de app_fornecedor na
+  // mesma migration que criou o indice parcial (design-backend.md 13.2).
   @Patch(':id')
   atualizar(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(AtualizarDisponibilidadeSchema)) dto: AtualizarDisponibilidadeDto,
   ) {
     return this.disponibilidades.atualizar(id, dto);
-  }
-
-  @Delete(':id')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  async remover(@Param('id') id: string): Promise<void> {
-    await this.disponibilidades.remover(id);
   }
 }

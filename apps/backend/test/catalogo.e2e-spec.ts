@@ -316,7 +316,7 @@ describe('CatalogoModule (e2e)', () => {
     it('POST /disponibilidades sem token -> 401 NAO_AUTENTICADO', async () => {
       const resposta = await request(app.getHttpServer())
         .post('/disponibilidades')
-        .send({ produtoId: 'x', hubId, quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .send({ produtoId: 'x', hubId, quantidadeMinimaM3: 1, quantidadeMaximaM3: 10, prazoMaximoEsperaDias: 5 })
         .expect(401);
       expect(resposta.body.error.code).toBe('NAO_AUTENTICADO');
     });
@@ -326,7 +326,7 @@ describe('CatalogoModule (e2e)', () => {
       const resposta = await request(app.getHttpServer())
         .post('/disponibilidades')
         .set('Authorization', `Bearer ${comprador.accessToken}`)
-        .send({ produtoId: 'x', hubId, quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .send({ produtoId: 'x', hubId, quantidadeMinimaM3: 1, quantidadeMaximaM3: 10, prazoMaximoEsperaDias: 5 })
         .expect(403);
       expect(resposta.body.error.code).toBe('SEM_PERMISSAO');
     });
@@ -338,7 +338,7 @@ describe('CatalogoModule (e2e)', () => {
       const criada = await request(app.getHttpServer())
         .post('/disponibilidades')
         .set('Authorization', `Bearer ${fornecedor.accessToken}`)
-        .send({ produtoId, hubId, quantidadeMinima: 10, quantidadeMaxima: 100, prazoMaximoEsperaDias: 7 })
+        .send({ produtoId, hubId, quantidadeMinimaM3: 10, quantidadeMaximaM3: 100, prazoMaximoEsperaDias: 7 })
         .expect(201);
 
       expect(criada.body.fornecedorId).toBe(fornecedor.fornecedorId);
@@ -347,7 +347,7 @@ describe('CatalogoModule (e2e)', () => {
         .get(`/disponibilidades/${criada.body.id}`)
         .set('Authorization', `Bearer ${fornecedor.accessToken}`)
         .expect(200);
-      expect(buscada.body.quantidadeMaxima).toBe(100);
+      expect(buscada.body.quantidadeMaximaM3).toBe(100);
     });
 
     it('fornecedor nao pode declarar disponibilidade pro produto de OUTRO fornecedor -- 403, RLS nao pegaria isso', async () => {
@@ -358,7 +358,7 @@ describe('CatalogoModule (e2e)', () => {
       const resposta = await request(app.getHttpServer())
         .post('/disponibilidades')
         .set('Authorization', `Bearer ${intruso.accessToken}`)
-        .send({ produtoId, hubId, quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .send({ produtoId, hubId, quantidadeMinimaM3: 1, quantidadeMaximaM3: 10, prazoMaximoEsperaDias: 5 })
         .expect(403);
       expect(resposta.body.error.code).toBe('SEM_PERMISSAO');
     });
@@ -371,21 +371,21 @@ describe('CatalogoModule (e2e)', () => {
         .send({
           produtoId: 'produto-que-nao-existe',
           hubId,
-          quantidadeMinima: 1,
-          quantidadeMaxima: 10,
+          quantidadeMinimaM3: 1,
+          quantidadeMaximaM3: 10,
           prazoMaximoEsperaDias: 5,
         })
         .expect(404);
       expect(resposta.body.error.code).toBe('RECURSO_NAO_ENCONTRADO');
     });
 
-    it('payload invalido (quantidadeMinima > quantidadeMaxima) -> 400 VALIDACAO', async () => {
+    it('payload invalido (quantidadeMinimaM3 > quantidadeMaximaM3) -> 400 VALIDACAO', async () => {
       const fornecedor = await cadastrarFornecedorEFazerLogin('disp-d');
       const produtoId = await criarProduto(fornecedor.accessToken, 'Produto payload invalido');
       const resposta = await request(app.getHttpServer())
         .post('/disponibilidades')
         .set('Authorization', `Bearer ${fornecedor.accessToken}`)
-        .send({ produtoId, hubId, quantidadeMinima: 100, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .send({ produtoId, hubId, quantidadeMinimaM3: 100, quantidadeMaximaM3: 10, prazoMaximoEsperaDias: 5 })
         .expect(400);
       expect(resposta.body.error.code).toBe('VALIDACAO');
     });
@@ -396,13 +396,13 @@ describe('CatalogoModule (e2e)', () => {
       await request(app.getHttpServer())
         .post('/disponibilidades')
         .set('Authorization', `Bearer ${fornecedor.accessToken}`)
-        .send({ produtoId, hubId, quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .send({ produtoId, hubId, quantidadeMinimaM3: 1, quantidadeMaximaM3: 10, prazoMaximoEsperaDias: 5 })
         .expect(201);
 
       const resposta = await request(app.getHttpServer())
         .post('/disponibilidades')
         .set('Authorization', `Bearer ${fornecedor.accessToken}`)
-        .send({ produtoId, hubId, quantidadeMinima: 2, quantidadeMaxima: 20, prazoMaximoEsperaDias: 5 })
+        .send({ produtoId, hubId, quantidadeMinimaM3: 2, quantidadeMaximaM3: 20, prazoMaximoEsperaDias: 5 })
         .expect(409);
       expect(resposta.body.error.code).toBe('DISPONIBILIDADE_JA_EXISTE');
     });
@@ -416,12 +416,12 @@ describe('CatalogoModule (e2e)', () => {
       await request(app.getHttpServer())
         .post('/disponibilidades')
         .set('Authorization', `Bearer ${fornecedorF.accessToken}`)
-        .send({ produtoId: produtoF, hubId, quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .send({ produtoId: produtoF, hubId, quantidadeMinimaM3: 1, quantidadeMaximaM3: 10, prazoMaximoEsperaDias: 5 })
         .expect(201);
       await request(app.getHttpServer())
         .post('/disponibilidades')
         .set('Authorization', `Bearer ${fornecedorG.accessToken}`)
-        .send({ produtoId: produtoG, hubId, quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .send({ produtoId: produtoG, hubId, quantidadeMinimaM3: 1, quantidadeMaximaM3: 10, prazoMaximoEsperaDias: 5 })
         .expect(201);
 
       const listaF = await request(app.getHttpServer())
@@ -443,7 +443,7 @@ describe('CatalogoModule (e2e)', () => {
       const criada = await request(app.getHttpServer())
         .post('/disponibilidades')
         .set('Authorization', `Bearer ${fornecedorA.accessToken}`)
-        .send({ produtoId: produtoA, hubId, quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .send({ produtoId: produtoA, hubId, quantidadeMinimaM3: 1, quantidadeMaximaM3: 10, prazoMaximoEsperaDias: 5 })
         .expect(201);
 
       const buscaB = await request(app.getHttpServer())
@@ -455,7 +455,7 @@ describe('CatalogoModule (e2e)', () => {
       const patchB = await request(app.getHttpServer())
         .patch(`/disponibilidades/${criada.body.id}`)
         .set('Authorization', `Bearer ${fornecedorB.accessToken}`)
-        .send({ quantidadeMaxima: 999 })
+        .send({ quantidadeMaximaM3: 999 })
         .expect(404);
       expect(patchB.body.error.code).toBe('RECURSO_NAO_ENCONTRADO');
     });
@@ -466,56 +466,76 @@ describe('CatalogoModule (e2e)', () => {
       const criada = await request(app.getHttpServer())
         .post('/disponibilidades')
         .set('Authorization', `Bearer ${fornecedor.accessToken}`)
-        .send({ produtoId, hubId, quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .send({ produtoId, hubId, quantidadeMinimaM3: 1, quantidadeMaximaM3: 10, prazoMaximoEsperaDias: 5 })
         .expect(201);
 
       const atualizada = await request(app.getHttpServer())
         .patch(`/disponibilidades/${criada.body.id}`)
         .set('Authorization', `Bearer ${fornecedor.accessToken}`)
-        .send({ quantidadeMaxima: 500 })
+        .send({ quantidadeMaximaM3: 500 })
         .expect(200);
-      expect(atualizada.body.quantidadeMaxima).toBe(500);
+      expect(atualizada.body.quantidadeMaximaM3).toBe(500);
     });
 
-    it('CHECK do banco: UPDATE so de quantidadeMinima pra valor maior que a quantidadeMaxima JA SALVA -> 400 VALIDACAO (P2004)', async () => {
+    it('CHECK do banco: UPDATE so de quantidadeMinimaM3 pra valor maior que a quantidadeMaximaM3 JA SALVA -> 400 VALIDACAO (P2004)', async () => {
       const fornecedor = await cadastrarFornecedorEFazerLogin('disp-j');
       const produtoId = await criarProduto(fornecedor.accessToken, 'Produto J');
       const criada = await request(app.getHttpServer())
         .post('/disponibilidades')
         .set('Authorization', `Bearer ${fornecedor.accessToken}`)
-        .send({ produtoId, hubId, quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .send({ produtoId, hubId, quantidadeMinimaM3: 1, quantidadeMaximaM3: 10, prazoMaximoEsperaDias: 5 })
         .expect(201);
 
-      // So quantidadeMinima vem no payload -- o Zod nao tem o que comparar
+      // So quantidadeMinimaM3 vem no payload -- o Zod nao tem o que comparar
       // (so um campo presente), entao quem precisa rejeitar isso e o CHECK
-      // do Postgres contra o quantidadeMaxima=10 ja salvo.
+      // do Postgres contra o quantidadeMaximaM3=10 ja salvo.
       const resposta = await request(app.getHttpServer())
         .patch(`/disponibilidades/${criada.body.id}`)
         .set('Authorization', `Bearer ${fornecedor.accessToken}`)
-        .send({ quantidadeMinima: 999 })
+        .send({ quantidadeMinimaM3: 999 })
         .expect(400);
       expect(resposta.body.error.code).toBe('VALIDACAO');
     });
 
-    it('fornecedor remove a propria disponibilidade -- 204, e some do GET', async () => {
+    it('nao existe DELETE -- "remover" e encerrar a vigencia (PATCH vigenciaFim), historico preservado', async () => {
       const fornecedor = await cadastrarFornecedorEFazerLogin('disp-k');
       const produtoId = await criarProduto(fornecedor.accessToken, 'Produto K');
       const criada = await request(app.getHttpServer())
         .post('/disponibilidades')
         .set('Authorization', `Bearer ${fornecedor.accessToken}`)
-        .send({ produtoId, hubId, quantidadeMinima: 1, quantidadeMaxima: 10, prazoMaximoEsperaDias: 5 })
+        .send({ produtoId, hubId, quantidadeMinimaM3: 1, quantidadeMaximaM3: 10, prazoMaximoEsperaDias: 5 })
         .expect(201);
 
-      await request(app.getHttpServer())
-        .delete(`/disponibilidades/${criada.body.id}`)
+      // Enquanto esta vigente (vigenciaFim null), uma SEGUNDA declaracao
+      // pro mesmo produto+hub colide no indice unico parcial.
+      const colisao = await request(app.getHttpServer())
+        .post('/disponibilidades')
         .set('Authorization', `Bearer ${fornecedor.accessToken}`)
-        .expect(204);
+        .send({ produtoId, hubId, quantidadeMinimaM3: 2, quantidadeMaximaM3: 20, prazoMaximoEsperaDias: 5 })
+        .expect(409);
+      expect(colisao.body.error.code).toBe('DISPONIBILIDADE_JA_EXISTE');
 
-      const resposta = await request(app.getHttpServer())
+      // Encerra a vigencia -- a linha continua existindo (historico), so
+      // some de "vigente".
+      await request(app.getHttpServer())
+        .patch(`/disponibilidades/${criada.body.id}`)
+        .set('Authorization', `Bearer ${fornecedor.accessToken}`)
+        .send({ vigenciaFim: new Date().toISOString() })
+        .expect(200);
+
+      const aindaExiste = await request(app.getHttpServer())
         .get(`/disponibilidades/${criada.body.id}`)
         .set('Authorization', `Bearer ${fornecedor.accessToken}`)
-        .expect(404);
-      expect(resposta.body.error.code).toBe('RECURSO_NAO_ENCONTRADO');
+        .expect(200);
+      expect(aindaExiste.body.vigenciaFim).not.toBeNull();
+
+      // Com a anterior encerrada, uma nova pro mesmo produto+hub agora
+      // cabe no indice unico parcial (WHERE vigenciaFim IS NULL).
+      await request(app.getHttpServer())
+        .post('/disponibilidades')
+        .set('Authorization', `Bearer ${fornecedor.accessToken}`)
+        .send({ produtoId, hubId, quantidadeMinimaM3: 2, quantidadeMaximaM3: 20, prazoMaximoEsperaDias: 5 })
+        .expect(201);
     });
   });
 });
