@@ -117,35 +117,47 @@ model Comprador {
 }
 
 model Fornecedor {
-  id                 String                      @id @default(cuid())
-  name               String
-  document           String                      @unique // CNPJ
+  id               String                      @id @default(cuid())
+  name             String
+  document         String                      @unique // CNPJ
   // Calculado pelo modulo de analise de sentimento (OE4) a partir das avaliacoes.
-  reputationScore    Float?
-  usuario            Usuario?
-  produtos           Produto[]
-  avaliacoes         Avaliacao[]
-  repasses           Repasse[]
-  disponibilidades   DisponibilidadeFornecedor[] // D-B (E3)
-  createdAt          DateTime                    @default(now())
+  reputationScore  Float?
+  usuario          Usuario?
+  produtos         Produto[]
+  avaliacoes       Avaliacao[]
+  repasses         Repasse[]
+  disponibilidades DisponibilidadeFornecedor[] // D-B (E3)
+  createdAt        DateTime                    @default(now())
 }
 
 model Produto {
-  id               String                      @id @default(cuid())
-  name             String
-  description      String?
-  unitPrice        Float
-  fornecedorId     String
-  fornecedor       Fornecedor                  @relation(fields: [fornecedorId], references: [id])
-  lotes            Lote[]
-  disponibilidades DisponibilidadeFornecedor[] // D-B (E3)
-  createdAt        DateTime                    @default(now())
+  id                            String                      @id @default(cuid())
+  name                          String
+  description                   String?
+  unitPrice                     Float
+  fornecedorId                  String
+  fornecedor                    Fornecedor                  @relation(fields: [fornecedorId], references: [id])
+  lotes                         Lote[]
+  // D-B (E3). Dois lados pro MESMO par de modelos -- a relacao simples
+  // (so produtoId) e a relacao composta (produtoId+fornecedorId, pra
+  // travar fornecedorId contra o dono real do produto) tem que ter nomes
+  // diferentes, senao o Prisma nao sabe qual @relation() do outro lado
+  // casa com qual. "PorFornecedor" nunca e usado de verdade pela
+  // aplicacao (nenhum service navega por ele) -- existe so pra
+  // representar a FK composta no schema.prisma, ver nota na migration
+  // 20261112150000 (prisma migrate diff reportava essa FK como
+  // divergencia antes desta correcao, ja que so existia como SQL puro).
+  disponibilidades              DisponibilidadeFornecedor[] @relation("disponibilidade_produto")
+  disponibilidadesPorFornecedor DisponibilidadeFornecedor[] @relation("disponibilidade_produto_fornecedor")
+  createdAt                     DateTime                    @default(now())
 
   // Unique redundante com "id" de proposito: e o QUE a FK composta de
   // DisponibilidadeFornecedor(produtoId, fornecedorId) referencia, pra
   // travar no banco que o fornecedorId denormalizado la sempre bate com
   // o fornecedor REAL do produto -- antes disso so a aplicacao garantia.
-  @@unique([id, fornecedorId])
+  // map: nome exato ja criado na migration 20261112150000 -- sem isso o
+  // Prisma tentaria dropar e recriar o constraint com o nome default dele.
+  @@unique([id, fornecedorId], map: "Produto_id_fornecedorId_key")
 }
 
 model HubLogistico {
@@ -166,15 +178,20 @@ model HubLogistico {
 // podem ter limites diferentes, ex. hub mais distante aceita volume
 // minimo menor). fornecedorId e denormalizado de produto.fornecedorId de
 // proposito -- RLS compara coluna direta contra app.fornecedor_id, nunca
-// um subselect em Produto (mesmo padrao de produto_update_fornecedor);
-// quem garante a consistencia e a camada de aplicacao (o service so
-// aceita produtoId que pertence ao proprio fornecedor autenticado), nao
-// um trigger -- mesmo espirito de ProdutosService.criar (fornecedorId
-// sempre vem do JWT, nunca do payload).
+// um subselect em Produto (mesmo padrao de produto_update_fornecedor).
+// Consistencia fornecedorId<->produtoId e ESTRUTURAL (FK composta
+// DisponibilidadeFornecedor_produto_fornecedor_fkey, abaixo), nao so
+// aplicacao -- a checagem em DisponibilidadesService.criar continua
+// existindo como defesa em profundidade (da um 403 SEM_PERMISSAO cedo,
+// em vez de deixar a violacao de FK chegar como erro generico).
 model DisponibilidadeFornecedor {
   id                    String       @id @default(cuid())
   produtoId             String
-  produto               Produto      @relation(fields: [produtoId], references: [id])
+  produto               Produto      @relation("disponibilidade_produto", fields: [produtoId], references: [id])
+  // Relacao SO pra representar a FK composta no banco (ver nota em
+  // Produto.disponibilidadesPorFornecedor) -- nunca navegada pela
+  // aplicacao, o campo "produto" acima e que e usado de verdade.
+  produtoFornecedor     Produto      @relation("disponibilidade_produto_fornecedor", fields: [produtoId, fornecedorId], references: [id, fornecedorId], map: "DisponibilidadeFornecedor_produto_fornecedor_fkey")
   fornecedorId          String
   fornecedor            Fornecedor   @relation(fields: [fornecedorId], references: [id])
   hubId                 String
@@ -195,9 +212,6 @@ model DisponibilidadeFornecedor {
   vigenciaFim           DateTime?
   createdAt             DateTime     @default(now())
 
-  // FK composta -- garante no banco que fornecedorId bate com o
-  // fornecedor REAL do produtoId (contra Produto.@@unique([id,
-  // fornecedorId])), nao so na aplicacao (ProdutosService-style check).
   @@index([produtoId, hubId])
 }
 

@@ -27,6 +27,7 @@ Valem em todas as etapas, sem exceção.
 9. **Não ajuste parâmetros de experimento para atingir um critério.** Reporte o resultado como saiu.
 10. **Nunca registre senha, connection string ou segredo** em arquivo versionado.
 11. **Nomes de entidades no código acompanham o texto do TCC** (PascalCase, em português): `IntencaoCompra`, `DisponibilidadeFornecedor` etc.
+12. **Divisão schema.prisma vs. SQL puro na migration:** o que o Prisma consegue representar (FK simples ou composta, `@@unique`, índice comum) fica declarado em `schema.prisma`, usando `map:` com o nome exato já criado no banco quando a constraint foi aplicada por SQL puro primeiro — nunca deixado "invisível" só porque dava mais trabalho modelar. RLS, trigger, `CHECK` e índice parcial não são expressáveis no Prisma e ficam só no SQL da migration — essa é a única divisão aceita. `npx prisma migrate diff --from-migrations ./prisma/migrations --to-schema-datamodel ./prisma/schema.prisma --shadow-database-url <descartável> --exit-code` roda ao final de toda etapa, junto com `npm run test:rls` — código de saída 0 é obrigatório antes de considerar a etapa pronta (achado real: a FK composta de `DisponibilidadeFornecedor` ficou só em SQL puro na E3/revisão da E4 e isso gerava divergência — corrigido modelando a FK no schema com `map:` pros nomes já existentes, sem tocar no banco).
 
 ---
 
